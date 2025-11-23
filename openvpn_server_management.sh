@@ -16,9 +16,12 @@ OVPN_POOL="10.8.0.0 255.255.255.0"  # VPN subnet
 
 # IPv6 configuration - EDIT THESE VALUES
 OVPN_IPV6_ENABLE="yes"        # Enable IPv6: yes or no
-# Use Unique Local Address (ULA) - Generate random at https://unique-local-ipv6.com/
-# Format: fdXX:XXXX:XXXX::/48 then use /64 subnet from that
-OVPN_IPV6_POOL="fd42:4242:4242:1194::/64"  # IPv6 VPN subnet (ULA recommended)
+OVPN_IPV6_MODE="static"       # Mode: "static" (simple, default) or "dhcpv6" (advanced, tracked)
+# IPv6 Pool - Auto-detected from WAN or set manually:
+# - For globally routable: Use a /64 from your ISP's delegation
+# - For ULA (private): Generate at https://unique-local-ipv6.com/
+OVPN_IPV6_POOL="fd42:4242:4242:1194::/64"  # IPv6 VPN subnet
+OVPN_IPV6_POOL_SIZE="253"     # Max clients (for tracking/limiting)
 
 # Auto-detect DNS and domain from OpenWrt UCI
 OVPN_DNS="${OVPN_POOL%.* *}.1"
@@ -26,6 +29,65 @@ OVPN_DOMAIN=$(uci get dhcp.@dnsmasq[0].domain 2>/dev/null || echo "lan")
 
 # Auto-detect IPv6 DNS (first address in IPv6 pool)
 OVPN_IPV6_DNS="${OVPN_IPV6_POOL%::*}::1"
+
+# Function to detect IPv6 prefix delegation from WAN
+detect_ipv6_prefix() {
+    echo "Detecting IPv6 configuration from WAN interface..."
+    echo ""
+
+    # Get WAN interface name
+    . /lib/functions/network.sh
+    network_flush_cache
+    network_find_wan6 WAN6_IF
+
+    if [ -z "$WAN6_IF" ]; then
+        echo "  No WAN IPv6 interface found"
+        echo "  IPv6 may not be configured on this router"
+        return 1
+    fi
+
+    echo "  WAN IPv6 interface: $WAN6_IF"
+
+    # Get IPv6 addresses and prefixes
+    wan6_addrs=$(ip -6 addr show dev "$WAN6_IF" 2>/dev/null | grep "inet6" | grep -v "fe80::" | grep -v "::1")
+
+    if [ -z "$wan6_addrs" ]; then
+        echo "  No global IPv6 addresses found on WAN"
+        echo "  Check your ISP's IPv6 connectivity"
+        return 1
+    fi
+
+    echo "  IPv6 addresses on WAN:"
+    echo "$wan6_addrs" | while read line; do
+        echo "    $line"
+    done
+    echo ""
+
+    # Try to detect prefix delegation size
+    prefix_delegation=$(uci get network.wan6.ip6prefix 2>/dev/null)
+    if [ -n "$prefix_delegation" ]; then
+        echo "  Detected IPv6 prefix delegation: $prefix_delegation"
+
+        # Extract prefix size (e.g., /56, /64)
+        prefix_size=$(echo "$prefix_delegation" | grep -o '/[0-9]*' | tr -d '/')
+
+        if [ "$prefix_size" -le 60 ]; then
+            echo "  You have multiple /64 subnets available!"
+            echo "  Recommended: Dedicate one /64 subnet for OpenVPN clients"
+        elif [ "$prefix_size" -eq 64 ]; then
+            echo "  You have a single /64 subnet"
+            echo "  Warning: Sharing a /64 between LAN and VPN requires NDP proxy"
+        else
+            echo "  Prefix is smaller than /64 - IPv6 may not work correctly"
+        fi
+    else
+        echo "  No prefix delegation detected in UCI config"
+        echo "  IPv6 may be using SLAAC only"
+    fi
+
+    echo ""
+    return 0
+}
 
 # Auto-Detect DDNS configured name, Fetch server address configured elsewhere
 auto_detect_fqdn() {
@@ -152,6 +214,11 @@ auto_detect_fqdn() {
     fi
 
     echo ""
+    echo "=== IPv6 Prefix Detection ==="
+    echo ""
+    detect_ipv6_prefix
+
+    echo ""
     echo "=== Final Settings (will be used for new configs) ==="
     echo ""
     echo "Network Configuration:"
@@ -167,8 +234,10 @@ auto_detect_fqdn() {
     echo "IPv6 Configuration:"
     if [ "$OVPN_IPV6_ENABLE" = "yes" ]; then
         echo "  Status: ENABLED - will be included in server.conf"
+        echo "  Mode: $OVPN_IPV6_MODE (static=simple, dhcpv6=advanced/tracked)"
         echo "  VPN Subnet: $OVPN_IPV6_POOL"
         echo "  DNS Server: $OVPN_IPV6_DNS"
+        echo "  Max Clients: $OVPN_IPV6_POOL_SIZE"
     else
         echo "  Status: DISABLED - will NOT be included in server.conf"
         echo "  (Use option 3 to enable IPv6 support)"
@@ -250,6 +319,7 @@ configure_vpn_firewall() {
         else
             echo "  IPv6 forwarding already enabled"
         fi
+
     fi
 
     # Commit changes
@@ -390,10 +460,15 @@ generate_server_conf() {
     echo ""
     echo "IPv6 Settings:"
     if [ "$OVPN_IPV6_ENABLE" = "yes" ]; then
+        OVPN_IPV6_SERVER="${OVPN_IPV6_POOL%::*}::1"
+        OVPN_IPV6_CLIENT="${OVPN_IPV6_POOL%::*}::2"
         echo "  Status: ENABLED - IPv6 will be configured"
         echo "  VPN Subnet: $OVPN_IPV6_POOL"
+        echo "  Server Address: $OVPN_IPV6_SERVER"
+        echo "  Client Address: $OVPN_IPV6_CLIENT"
         echo "  DNS Server: $OVPN_IPV6_DNS"
         echo "  Routes: All IPv6 traffic (2000::/3) via VPN"
+        echo "  Tunnel IPv6: Enabled (tun-ipv6)"
     else
         echo "  Status: DISABLED - IPv6 will NOT be configured"
         echo "  (Use option 3 to enable IPv6 before generating config)"
@@ -449,9 +524,15 @@ EOF
 
     # Add IPv6 configuration if enabled
     if [ "$OVPN_IPV6_ENABLE" = "yes" ]; then
+        # Calculate IPv6 server and client addresses for ifconfig-ipv6
+        OVPN_IPV6_SERVER="${OVPN_IPV6_POOL%::*}::1"
+        OVPN_IPV6_CLIENT="${OVPN_IPV6_POOL%::*}::2"
+
         cat << EOF >> ${OVPN_SERVER_CONF}
 # IPv6 configuration
 server-ipv6 ${OVPN_IPV6_POOL}
+tun-ipv6
+ifconfig-ipv6 ${OVPN_IPV6_SERVER} ${OVPN_IPV6_CLIENT}
 
 EOF
     fi
@@ -484,6 +565,7 @@ EOF
     if [ "$OVPN_IPV6_ENABLE" = "yes" ]; then
         cat << EOF >> ${OVPN_SERVER_CONF}
 # IPv6 push routes and DNS
+push "tun-ipv6"
 push "route-ipv6 2000::/3"
 push "dhcp-option DNS6 ${OVPN_IPV6_DNS}"
 
@@ -975,6 +1057,193 @@ revoke_client() {
     esac
 }
 
+# Function to monitor VPN address usage (IPv4 and IPv6)
+monitor_vpn_usage() {
+    echo ""
+    echo "=== VPN Address Usage Monitor ==="
+    echo ""
+
+    # Check if OpenVPN is running
+    if ! pgrep -x openvpn >/dev/null; then
+        echo "OpenVPN is not running"
+        return 1
+    fi
+
+    # Find tun interfaces
+    tun_interfaces=$(ip link show | grep -o "tun[0-9]*" | sort -u)
+
+    if [ -z "$tun_interfaces" ]; then
+        echo "No VPN tunnel interfaces found"
+        return 1
+    fi
+
+    for tun_if in $tun_interfaces; do
+        echo "=================================================="
+        echo "Interface: $tun_if"
+        echo "=================================================="
+        echo ""
+
+        # === IPv4 Monitoring ===
+        echo "--- IPv4 Status ---"
+        ipv4_addrs=$(ip -4 addr show dev "$tun_if" 2>/dev/null | grep "inet ")
+
+        if [ -z "$ipv4_addrs" ]; then
+            echo "  No IPv4 addresses configured"
+        else
+            echo "  IPv4 Addresses:"
+            echo "$ipv4_addrs" | while read line; do
+                echo "    $line"
+            done
+
+            # Extract network and calculate pool info
+            pool_network=$(echo "$ipv4_addrs" | head -1 | awk '{print $2}' | cut -d'/' -f1)
+            pool_prefix=$(echo "$ipv4_addrs" | head -1 | awk '{print $2}' | cut -d'/' -f2)
+
+            echo ""
+            echo "  IPv4 Network: $pool_network/$pool_prefix"
+
+            # Calculate pool size based on netmask
+            if [ "$pool_prefix" = "24" ]; then
+                max_hosts=253  # /24 = 254 usable, minus 1 for server
+            elif [ "$pool_prefix" = "25" ]; then
+                max_hosts=125
+            elif [ "$pool_prefix" = "26" ]; then
+                max_hosts=61
+            elif [ "$pool_prefix" = "27" ]; then
+                max_hosts=29
+            else
+                max_hosts="unknown"
+            fi
+
+            # Count connected IPv4 clients from ARP
+            ipv4_neighbors=$(ip -4 neigh show dev "$tun_if" | grep -v "FAILED" | wc -l)
+
+            echo "  Connected IPv4 clients: $ipv4_neighbors"
+            if [ "$max_hosts" != "unknown" ]; then
+                remaining=$((max_hosts - ipv4_neighbors))
+                echo "  Maximum clients (/$pool_prefix): $max_hosts"
+                echo "  Remaining capacity: $remaining"
+            fi
+
+            echo ""
+            echo "  IPv4 Neighbors (ARP table):"
+            neighbors=$(ip -4 neigh show dev "$tun_if" | grep -v "FAILED")
+            if [ -z "$neighbors" ]; then
+                echo "    No IPv4 neighbors detected"
+            else
+                echo "$neighbors" | while read line; do
+                    echo "    $line"
+                done
+            fi
+        fi
+
+        echo ""
+
+        # === IPv6 Monitoring ===
+        echo "--- IPv6 Status ---"
+        ipv6_addrs=$(ip -6 addr show dev "$tun_if" 2>/dev/null | grep "inet6" | grep -v "fe80::")
+
+        if [ -z "$ipv6_addrs" ]; then
+            echo "  No IPv6 addresses configured"
+        else
+            echo "  IPv6 Addresses:"
+            echo "$ipv6_addrs" | while read line; do
+                echo "    $line"
+            done
+
+            # Count addresses (excluding link-local)
+            addr_count=$(echo "$ipv6_addrs" | wc -l)
+            echo ""
+            echo "  Total IPv6 addresses: $addr_count"
+
+            if [ -n "$OVPN_IPV6_POOL_SIZE" ] && [ "$OVPN_IPV6_POOL_SIZE" -gt 0 ]; then
+                remaining=$((OVPN_IPV6_POOL_SIZE - addr_count))
+                echo "  Configured limit: $OVPN_IPV6_POOL_SIZE"
+                echo "  Remaining capacity: $remaining"
+            fi
+
+            echo ""
+            echo "  Connected IPv6 Clients (NDP table):"
+            neighbors=$(ip -6 neigh show dev "$tun_if" | grep -v "fe80::" | grep -v "FAILED")
+
+            if [ -z "$neighbors" ]; then
+                echo "    No IPv6 neighbors detected"
+            else
+                echo "$neighbors" | while read line; do
+                    echo "    $line"
+                done
+            fi
+        fi
+
+        echo ""
+    done
+
+    # Check OpenVPN status log if available
+    if [ -f "/var/log/openvpn-status.log" ]; then
+        echo "=================================================="
+        echo "OpenVPN Client Status (from status log)"
+        echo "=================================================="
+        echo ""
+
+        # Force OpenVPN to update status file by sending SIGUSR2
+        openvpn_pid=$(pgrep -x openvpn)
+        if [ -n "$openvpn_pid" ]; then
+            echo "Updating status file (sending SIGUSR2 to PID $openvpn_pid)..."
+            kill -USR2 $openvpn_pid 2>/dev/null
+
+            # Wait briefly for status file to be written
+            sleep 1
+            echo ""
+        else
+            echo "Warning: Could not find OpenVPN process to trigger status update"
+            echo "Status file may be outdated"
+            echo ""
+        fi
+
+        # Count total clients
+        total_clients=$(grep "^CLIENT_LIST" /var/log/openvpn-status.log 2>/dev/null | grep -v "HEADER" | wc -l)
+        echo "Total connected clients: $total_clients"
+        echo ""
+
+        grep "^CLIENT_LIST" /var/log/openvpn-status.log 2>/dev/null | while read line; do
+            # Parse: CLIENT_LIST,name,real_addr,virtual_addr,virtual_ipv6_addr,bytes_recv,bytes_sent,connected_since,connected_since_epoch,username
+            client_name=$(echo "$line" | cut -d',' -f2)
+            real_addr=$(echo "$line" | cut -d',' -f3)
+            virtual_ipv4=$(echo "$line" | cut -d',' -f4)
+            virtual_ipv6=$(echo "$line" | cut -d',' -f5)
+            bytes_recv=$(echo "$line" | cut -d',' -f6)
+            bytes_sent=$(echo "$line" | cut -d',' -f7)
+            connected_since=$(echo "$line" | cut -d',' -f8)
+
+            if [ -n "$client_name" ] && [ "$client_name" != "HEADER" ]; then
+                echo "  Client: $client_name"
+                echo "    Real address: $real_addr"
+                echo "    Virtual IPv4: $virtual_ipv4"
+                if [ -n "$virtual_ipv6" ] && [ "$virtual_ipv6" != "" ]; then
+                    echo "    Virtual IPv6: $virtual_ipv6"
+                fi
+
+                # Convert bytes to human readable
+                if [ -n "$bytes_recv" ] && [ "$bytes_recv" -gt 0 ] 2>/dev/null; then
+                    bytes_recv_mb=$((bytes_recv / 1024 / 1024))
+                    bytes_sent_mb=$((bytes_sent / 1024 / 1024))
+                    echo "    Data: ↓ ${bytes_recv_mb} MB / ↑ ${bytes_sent_mb} MB"
+                fi
+
+                echo "    Connected since: $connected_since"
+                echo ""
+            fi
+        done
+    else
+        echo "=================================================="
+        echo "Note: OpenVPN status log not found at /var/log/openvpn-status.log"
+        echo "      Detailed client information not available"
+        echo "=================================================="
+    fi
+
+    echo ""
+}
+
 # Function to toggle IPv6 configuration
 toggle_ipv6() {
     echo ""
@@ -985,19 +1254,78 @@ toggle_ipv6() {
 
     if [ "$OVPN_IPV6_ENABLE" = "yes" ]; then
         echo "IPv6 is currently ENABLED"
+        echo "  Mode: $OVPN_IPV6_MODE"
         echo "  IPv6 VPN Subnet: $OVPN_IPV6_POOL"
         echo "  IPv6 DNS Server: $OVPN_IPV6_DNS"
+        echo "  Max Clients: $OVPN_IPV6_POOL_SIZE"
         echo ""
-        read -p "Disable IPv6 support? (yes/no): " confirm
+        echo "Options:"
+        echo "  1) Change IPv6 mode (static/dhcpv6)"
+        echo "  2) Change IPv6 subnet"
+        echo "  3) Change max clients limit"
+        echo "  4) Disable IPv6"
+        echo "  5) Cancel"
+        echo ""
+        read -p "Select option (1-5): " ipv6_option
 
-        if [ "$confirm" = "yes" ]; then
-            OVPN_IPV6_ENABLE="no"
-            echo ""
-            echo "IPv6 support disabled"
-            echo "Note: Regenerate server.conf (option 1) to apply changes"
-        else
-            echo "No changes made"
-        fi
+        case $ipv6_option in
+            1)
+                echo ""
+                echo "Current mode: $OVPN_IPV6_MODE"
+                echo ""
+                echo "Available modes:"
+                echo "  static  - Simple static pool allocation (recommended for most users)"
+                echo "  dhcpv6  - Advanced DHCPv6-PD with tracked leases (for advanced users)"
+                echo ""
+                read -p "Enter mode (static/dhcpv6): " new_mode
+                if [ "$new_mode" = "static" ] || [ "$new_mode" = "dhcpv6" ]; then
+                    OVPN_IPV6_MODE="$new_mode"
+                    echo "Mode changed to: $OVPN_IPV6_MODE"
+                    echo "Note: Regenerate server.conf (option 1) to apply changes"
+                else
+                    echo "Invalid mode. No changes made."
+                fi
+                ;;
+            2)
+                echo ""
+                echo "Current IPv6 subnet: $OVPN_IPV6_POOL"
+                echo ""
+                echo "For globally routable: Use a /64 from your ISP's delegation"
+                echo "For private ULA: Generate at https://unique-local-ipv6.com/"
+                echo ""
+                read -p "Enter new IPv6 subnet: " new_ipv6_pool
+                if [ -n "$new_ipv6_pool" ]; then
+                    OVPN_IPV6_POOL="$new_ipv6_pool"
+                    OVPN_IPV6_DNS="${OVPN_IPV6_POOL%::*}::1"
+                    echo "IPv6 subnet changed to: $OVPN_IPV6_POOL"
+                    echo "Note: Regenerate server.conf (option 1) to apply changes"
+                fi
+                ;;
+            3)
+                echo ""
+                echo "Current max clients: $OVPN_IPV6_POOL_SIZE"
+                read -p "Enter new max clients limit: " new_size
+                if [ -n "$new_size" ] && [ "$new_size" -gt 0 ] 2>/dev/null; then
+                    OVPN_IPV6_POOL_SIZE="$new_size"
+                    echo "Max clients limit changed to: $OVPN_IPV6_POOL_SIZE"
+                else
+                    echo "Invalid number. No changes made."
+                fi
+                ;;
+            4)
+                read -p "Disable IPv6 support? (yes/no): " confirm
+                if [ "$confirm" = "yes" ]; then
+                    OVPN_IPV6_ENABLE="no"
+                    echo "IPv6 support disabled"
+                    echo "Note: Regenerate server.conf (option 1) to apply changes"
+                else
+                    echo "No changes made"
+                fi
+                ;;
+            *)
+                echo "Cancelled"
+                ;;
+        esac
     else
         echo "IPv6 is currently DISABLED"
         echo ""
@@ -1006,14 +1334,33 @@ toggle_ipv6() {
         echo "  2. Push IPv6 routes to clients"
         echo "  3. Enable IPv6 DNS for VPN clients"
         echo ""
-        echo "Recommended: Use ULA (Unique Local Address) for private IPv6"
-        echo "Generate random ULA at: https://unique-local-ipv6.com/"
-        echo ""
         read -p "Enable IPv6 support? (yes/no): " confirm
 
         if [ "$confirm" = "yes" ]; then
             echo ""
+            echo "Select IPv6 mode:"
+            echo "  1) Static pool (recommended) - Simple, uses server-ipv6 directive"
+            echo "  2) DHCPv6-PD (advanced) - Tracked leases, requires odhcpd configuration"
+            echo ""
+            read -p "Select mode (1-2): " mode_choice
+
+            if [ "$mode_choice" = "2" ]; then
+                OVPN_IPV6_MODE="dhcpv6"
+                echo ""
+                echo "DHCPv6 mode selected"
+                echo "NOTE: This mode requires additional odhcpd configuration"
+            else
+                OVPN_IPV6_MODE="static"
+                echo ""
+                echo "Static pool mode selected (default)"
+            fi
+
+            echo ""
             echo "Current IPv6 subnet: $OVPN_IPV6_POOL"
+            echo ""
+            echo "For globally routable: Use a /64 from your ISP's delegation"
+            echo "For private ULA: Generate at https://unique-local-ipv6.com/"
+            echo ""
             read -p "Enter IPv6 subnet (or press Enter to keep current): " new_ipv6_pool
 
             if [ -n "$new_ipv6_pool" ]; then
@@ -1021,11 +1368,19 @@ toggle_ipv6() {
                 OVPN_IPV6_DNS="${OVPN_IPV6_POOL%::*}::1"
             fi
 
+            echo ""
+            read -p "Enter max clients limit (default 253): " new_size
+            if [ -n "$new_size" ] && [ "$new_size" -gt 0 ] 2>/dev/null; then
+                OVPN_IPV6_POOL_SIZE="$new_size"
+            fi
+
             OVPN_IPV6_ENABLE="yes"
             echo ""
             echo "IPv6 support enabled"
+            echo "  Mode: $OVPN_IPV6_MODE"
             echo "  IPv6 VPN Subnet: $OVPN_IPV6_POOL"
             echo "  IPv6 DNS Server: $OVPN_IPV6_DNS"
+            echo "  Max Clients: $OVPN_IPV6_POOL_SIZE"
             echo ""
             echo "Note: Regenerate server.conf (option 1) to apply changes"
         else
@@ -1090,9 +1445,12 @@ while true; do
     echo " 13) Check firewall configuration"
     echo " 14) Configure VPN firewall access"
     echo ""
-    echo " 15) Exit"
+    echo "VPN Monitoring:"
+    echo " 15) Monitor VPN address usage (IPv4 & IPv6)"
     echo ""
-    read -p "Select an option (0-15): " choice
+    echo " 16) Exit"
+    echo ""
+    read -p "Select an option (0-16): " choice
     
     case $choice in
 	0)
@@ -1155,11 +1513,15 @@ while true; do
             read -p "Press Enter to continue..."
             ;;
         15)
+            monitor_vpn_usage
+            read -p "Press Enter to continue..."
+            ;;
+        16)
             echo "Exiting..."
             exit 0
             ;;
         *)
-            echo "Invalid option. Please select 0-15."
+            echo "Invalid option. Please select 0-16."
             ;;
     esac
 done
