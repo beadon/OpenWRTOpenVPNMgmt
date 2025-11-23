@@ -21,37 +21,106 @@ OVPN_DOMAIN=$(uci get dhcp.@dnsmasq[0].domain 2>/dev/null || echo "lan")
 # Auto-Detect DDNS configured name, Fetch server address configured elsewhere
 auto_detect_fqdn() {
 
-    echo ""                                      
-    echo "Active script-selected server settings:"                     
-    echo "  Port: $OVPN_PORT"                    
-    echo "  Protocol: $OVPN_PROTO"               
-    echo "  VPN Subnet: $OVPN_POOL"              
+    echo ""
+    echo "Current script-default settings:"
+    echo "  Port: $OVPN_PORT"
+    echo "  Protocol: $OVPN_PROTO"
+    echo "  VPN Subnet: $OVPN_POOL"
     echo "  DNS Server: $OVPN_DNS"
-    echo "  Domain: $OVPN_DOMAIN"                
+    echo "  Domain: $OVPN_DOMAIN"
     echo "  VPN Server: $OVPN_SERV"
-    echo "  VPN Pool: $OVPN_POOL"
-    echo ""                                      
+    echo ""
 
+    echo "Detecting configuration from system..."
+    echo ""
+
+    # Try to detect from existing server.conf first
+    if [ -f "$OVPN_SERVER_CONF" ]; then
+        echo "Found existing server.conf, reading settings..."
+
+        # Detect port
+        DETECTED_PORT=$(grep "^port " "$OVPN_SERVER_CONF" | awk '{print $2}')
+        if [ -n "$DETECTED_PORT" ]; then
+            OVPN_PORT="$DETECTED_PORT"
+            echo "  Detected port: $OVPN_PORT"
+        fi
+
+        # Detect protocol
+        DETECTED_PROTO=$(grep "^proto " "$OVPN_SERVER_CONF" | awk '{print $2}')
+        if [ -n "$DETECTED_PROTO" ]; then
+            OVPN_PROTO="$DETECTED_PROTO"
+            echo "  Detected protocol: $OVPN_PROTO"
+        fi
+
+        # Detect server pool (format: "server 10.8.0.0 255.255.255.0")
+        DETECTED_POOL=$(grep "^server " "$OVPN_SERVER_CONF" | awk '{print $2, $3}')
+        if [ -n "$DETECTED_POOL" ]; then
+            OVPN_POOL="$DETECTED_POOL"
+            echo "  Detected VPN subnet: $OVPN_POOL"
+        fi
+
+        echo ""
+    fi
+
+    # If port/proto not found in server.conf, try firewall rules
+    if [ -z "$DETECTED_PORT" ] || [ -z "$DETECTED_PROTO" ]; then
+        echo "Checking firewall rules for OpenVPN configuration..."
+
+        rule_index=0
+        while true; do
+            rule_name=$(uci get "firewall.@rule[${rule_index}].name" 2>/dev/null)
+            if [ $? -ne 0 ]; then
+                break
+            fi
+
+            # Look for OpenVPN-related rules
+            if echo "$rule_name" | grep -qi "openvpn\|vpn"; then
+                rule_dest_port=$(uci get "firewall.@rule[${rule_index}].dest_port" 2>/dev/null)
+                rule_proto=$(uci get "firewall.@rule[${rule_index}].proto" 2>/dev/null)
+
+                if [ -n "$rule_dest_port" ] && [ -z "$DETECTED_PORT" ]; then
+                    OVPN_PORT="$rule_dest_port"
+                    echo "  Detected port from firewall: $OVPN_PORT"
+                fi
+
+                if [ -n "$rule_proto" ] && [ "$rule_proto" != "tcpudp" ] && [ -z "$DETECTED_PROTO" ]; then
+                    OVPN_PROTO="$rule_proto"
+                    echo "  Detected protocol from firewall: $OVPN_PROTO"
+                fi
+            fi
+
+            rule_index=$((rule_index + 1))
+        done
+        echo ""
+    fi
+
+    # Update DNS based on detected pool
+    OVPN_DNS="${OVPN_POOL%.* *}.1"
+
+    # Detect server FQDN/IP
     NET_FQDN="$(uci -q get ddns.@service[0].lookup_host)"
     . /lib/functions/network.sh
     network_flush_cache
     network_find_wan NET_IF
     network_get_ipaddr NET_ADDR "${NET_IF}"
     if [ -n "${NET_FQDN}" ]
-    then OVPN_SERV="${NET_FQDN}"
-    else OVPN_SERV="${NET_ADDR}"
+    then
+        OVPN_SERV="${NET_FQDN}"
+        echo "Detected DDNS hostname: $OVPN_SERV"
+    else
+        OVPN_SERV="${NET_ADDR}"
+        echo "Detected WAN IP address: $OVPN_SERV"
     fi
 
-    echo ""                                      
-    echo "Auto-Detected server settings:"                     
-    echo "  Port: $OVPN_PORT"                    
-    echo "  Protocol: $OVPN_PROTO"               
-    echo "  VPN Subnet: $OVPN_POOL"              
+    echo ""
+    echo "=== Final Auto-Detected Settings ==="
+    echo "  Port: $OVPN_PORT"
+    echo "  Protocol: $OVPN_PROTO"
+    echo "  VPN Subnet: $OVPN_POOL"
     echo "  DNS Server: $OVPN_DNS"
-    echo "  Domain: $OVPN_DOMAIN"                
+    echo "  Domain: $OVPN_DOMAIN"
     echo "  VPN Server: $OVPN_SERV"
-    echo "  VPN Pool: $OVPN_POOL"
-    echo ""                                      
+    echo ""
 
 }
 
@@ -813,13 +882,12 @@ key_management_first_time() {
 while true; do
     echo ""
     echo "=================================================="
-    echo "   OpenVPN Key Management"
+    echo "   OpenWRT OpenVPN Management"
     echo "=================================================="
     echo "Server Configuration:"
     echo "  0) Auto-Detect server settings"
     echo "  1) Generate/Update server.conf"
     echo "  2) Restore server.conf from backup"
-    echo "  3) Check firewall configuration"
     echo ""
     echo "Certificate Management:"
     echo "  4) Create new client certificate"
@@ -837,6 +905,7 @@ while true; do
     echo " 12) Install and initialize EasyRSA for OpenVPN"
     echo ""
     echo "Firewall Management:"
+    echo " 13) Check firewall configuration"
     echo " 14) Configure VPN firewall access"
     echo ""
     echo " 15) Exit"
@@ -852,10 +921,6 @@ while true; do
             ;;
         2)
             restore_server_conf
-            ;;
-        3)
-            check_firewall
-            read -p "Press Enter to continue..."
             ;;
         4)
             create_client
@@ -892,8 +957,12 @@ while true; do
             fi
             read -p "Press Enter to continue..."
             ;;
-	    12) 
+	    12)
             key_management_first_time
+            ;;
+        13)
+            check_firewall
+            read -p "Press Enter to continue..."
             ;;
         14)
             configure_vpn_firewall
