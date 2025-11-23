@@ -193,40 +193,56 @@ Generate .ovpn config file? (y/n): y
 ```
 
 **Client Naming:**
-- Use descriptive names: `laptop`, `phone`, `johns_computer`
+Keys are issued per-user per-device.  It is recommended that you choose the name of the device and the owner of the name in in the config.  Some OpenVPN clients permit the user to share the client configuration with all users of their system, there's no control you have over this as a server once the key is issued.
+
+Advise your users how to install the keys on their system based on the naming scheme you select.  This installation of the .OVPN files on the client machine is an exercise for you or your user.
+
+Know that by default the OpenVPN server will only allow one connection per client device at a time, this means that if you generate a single client ovpn file and place it on 2 devices, only one of these will be able to be connected at a time.  If the second client connects with the same key the first client will be kicked off.  This may be desirable behavior to keep the number of clients to a minimum, or it could be a hassle since more keys are required to support a per-user-per-device.  Either way, this sscript maks managing this easy.
+
+**Security**
+This naming scheme can be made more GDPR compliant by using a userID number instead of the user's name.  This way the user's real name is not used in any provisioning systems.  However, for most things this is an unnecessary complexity.
+
+This can be arranged any way you like, consider a naming scheme like:
+```<username>.<device>```
+
+- Examples: `bill.laptop`, `bill.phone`, `john.macbook`
 - Each client needs a unique certificate
 
 **Files Created:**
-- Certificate: `/etc/easy-rsa/pki/issued/laptop.crt`
-- Private key: `/etc/easy-rsa/pki/private/laptop.key`
-- TLS-Crypt key: `/etc/easy-rsa/pki/private/laptop.pem`
-- Client config: `/root/ovpn_config_out/laptop.ovpn`
+- Certificate: `/etc/easy-rsa/pki/issued/bill.laptop.crt`
+- Private key: `/etc/easy-rsa/pki/private/bill.laptop.key`
+- TLS-Crypt key: `/etc/easy-rsa/pki/private/bill.laptop.pem`
+- Client config: `/root/ovpn_config_out/bill.laptop.ovpn`
 
 ### Step 9: Download Client Configuration
 
-The `.ovpn` file is located at: `/root/ovpn_config_out/laptop.ovpn`
+The `.ovpn` file is located at: `/root/ovpn_config_out/bill.laptop.ovpn`
 
-**Transfer to your device using:**
+**Transfer the .ovpn file(s) from the router to your device using:**
 
 **SCP (from your computer):**
 ```bash
-scp root@192.168.1.1:/root/ovpn_config_out/laptop.ovpn ~/Downloads/
+scp root@192.168.1.1:/root/ovpn_config_out/bill.laptop.ovpn ~/Downloads/
 ```
 
 **Or via LuCI Web Interface:**
-1. Navigate to System → File Browser (if available) ( )
+NOTE: ( 11/23/2025) : there are no available file browsers in opkg for luci, if you find one, let me know and we'll update this section.
+
+1. Navigate to System → File Browser (if available)
 2. Or use System → Software → upload/download files
 
 ### Step 10: Connect Your Client
 
 **Windows/Mac/Linux:**
 1. Install OpenVPN client
-2. Import `laptop.ovpn`
+2. Import `bill.laptop.ovpn`
 3. Connect
 
 **Android/iOS:**
+NOTE: the re-use of the laptop key here will cause connection problems for the user, issue them a second client key in line with your key issuing naming convention (see above).
+
 1. Install OpenVPN Connect app
-2. Import `laptop.ovpn`
+2. Import `bill.laptop.ovpn`
 3. Connect
 
 **Verify Connection:**
@@ -239,21 +255,7 @@ curl -6 ifconfig.co     # Check IPv6 address (if enabled)
 ```
 
 
-
-
-
-
-
-
-
-
-
-
-
-
-
 # FEATURES
-
 
 ## UCI Management Integration
   - Script now fully integrates with OpenWrt's UCI configuration system
@@ -300,13 +302,13 @@ curl -6 ifconfig.co     # Check IPv6 address (if enabled)
   - Menu shows: "Currently managing: [server]"
 
   File Structure
-
+```
   /etc/config/openvpn          # UCI configuration (shared with LuCI)
   /etc/openvpn/
     ├── server.conf            # Default server instance config
     ├── office_vpn.conf        # Example: additional instance
     └── *.conf                 # Instance configs
-
+```
 
 ## Quick Reference - Common Operations
 
@@ -327,13 +329,17 @@ Shows:
 
 ### Create Additional Clients
 
+```
 **Menu Option: 4** (Create certificate)
 **Menu Option: 11** (Generate single .ovpn file)
+```
 
 ### Manage Multiple Server Instances
 
+```
 **Menu Option: i** - Select/Create instance
 **Menu Option: l** - List all instances
+```
 
 Example:
 ```
@@ -442,11 +448,6 @@ OVPN_POOL="10.8.0.0 255.255.255.0"  # IPv4 VPN subnet
 OVPN_IPV6_POOL="fd42:4242:4242:1194::/64"  # IPv6 VPN subnet
 OVPN_IPV6_POOL_SIZE="253"     # Max clients
 ```
-
-
-
-
-
 
 
 
