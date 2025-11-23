@@ -3,8 +3,15 @@
 # Configuration parameters
 OVPN_PKI="/etc/easy-rsa/pki"
 OVPN_DIR="/root/ovpn_config_out"
-OVPN_SERVER_CONF="/etc/openvpn/server.conf"
-OVPN_SERVER_BACKUP="/etc/openvpn/server.conf.BAK"
+
+# Instance management (UCI-aware)
+OVPN_INSTANCE="server"        # Current instance being managed (default: "server")
+OVPN_INSTANCE_TYPE="server"   # Type: server only (clients not managed by this script)
+
+# Dynamic paths based on instance
+OVPN_SERVER_CONF="/etc/openvpn/${OVPN_INSTANCE}.conf"
+OVPN_SERVER_BACKUP="/etc/openvpn/${OVPN_INSTANCE}.conf.BAK"
+
 export EASYRSA_PKI="${OVPN_PKI}"
 export EASYRSA_BATCH="1"
 
@@ -29,6 +36,305 @@ OVPN_DOMAIN=$(uci get dhcp.@dnsmasq[0].domain 2>/dev/null || echo "lan")
 
 # Auto-detect IPv6 DNS (first address in IPv6 pool)
 OVPN_IPV6_DNS="${OVPN_IPV6_POOL%::*}::1"
+
+# Function to update dynamic paths when instance changes
+update_instance_paths() {
+    OVPN_SERVER_CONF="/etc/openvpn/${OVPN_INSTANCE}.conf"
+    OVPN_SERVER_BACKUP="/etc/openvpn/${OVPN_INSTANCE}.conf.BAK"
+}
+
+# UCI Helper Functions for Instance Management
+
+# Validate instance name (LuCI rules: >3 chars, alphanumeric + underscore)
+validate_instance_name() {
+    local name="$1"
+
+    if [ -z "$name" ]; then
+        return 1
+    fi
+
+    # Check length
+    if [ ${#name} -le 3 ]; then
+        echo "Error: Instance name must be more than 3 characters"
+        return 1
+    fi
+
+    # Check for valid characters (alphanumeric + underscore)
+    if ! echo "$name" | grep -qE '^[a-zA-Z0-9_]+$'; then
+        echo "Error: Instance name can only contain letters, numbers, and underscores"
+        return 1
+    fi
+
+    return 0
+}
+
+# List all OpenVPN instances from UCI
+list_openvpn_instances() {
+    echo ""
+    echo "=== OpenVPN Instances (from UCI config) ==="
+    echo ""
+
+    # Check if UCI openvpn config exists
+    if ! uci show openvpn >/dev/null 2>&1; then
+        echo "No UCI OpenVPN configuration found"
+        echo "Run this script to auto-create the default 'server' instance"
+        return 1
+    fi
+
+    local found_instances=0
+    local instance_list=""
+
+    # Iterate through UCI sections
+    uci show openvpn 2>/dev/null | grep "=openvpn$" | while IFS='=' read -r section_path section_type; do
+        # Extract instance name from path (e.g., openvpn.server -> server)
+        instance_name=$(echo "$section_path" | cut -d'.' -f2)
+
+        # Get instance details
+        enabled=$(uci get openvpn.${instance_name}.enabled 2>/dev/null || echo "0")
+        config_file=$(uci get openvpn.${instance_name}.config 2>/dev/null || echo "/etc/openvpn/${instance_name}.conf")
+
+        # Check if it exists as a file
+        if [ -f "$config_file" ]; then
+            file_status="[exists]"
+        else
+            file_status="[missing]"
+        fi
+
+        # Check if enabled
+        if [ "$enabled" = "1" ]; then
+            enabled_status="enabled"
+        else
+            enabled_status="disabled"
+        fi
+
+        # Check if running
+        if pgrep -f "[o]penvpn.*${instance_name}" >/dev/null 2>&1; then
+            running_status="RUNNING"
+        else
+            running_status="stopped"
+        fi
+
+        echo "  Instance: $instance_name"
+        echo "    Status: $enabled_status, $running_status"
+        echo "    Config: $config_file $file_status"
+        echo ""
+
+        found_instances=$((found_instances + 1))
+    done
+
+    if [ $found_instances -eq 0 ]; then
+        echo "No instances configured"
+        echo ""
+        return 1
+    fi
+
+    return 0
+}
+
+# Ensure UCI instance exists (create if missing)
+ensure_uci_instance() {
+    local instance="$1"
+
+    if [ -z "$instance" ]; then
+        instance="$OVPN_INSTANCE"
+    fi
+
+    # Check if instance exists in UCI
+    if ! uci get openvpn.${instance} >/dev/null 2>&1; then
+        echo "Creating UCI instance: $instance"
+
+        # Create the instance section
+        uci set openvpn.${instance}=openvpn
+        uci set openvpn.${instance}.enabled=1
+        uci set openvpn.${instance}.config="/etc/openvpn/${instance}.conf"
+        uci commit openvpn
+
+        echo "UCI instance '$instance' created"
+    else
+        # Update config path if needed
+        current_config=$(uci get openvpn.${instance}.config 2>/dev/null)
+        expected_config="/etc/openvpn/${instance}.conf"
+
+        if [ "$current_config" != "$expected_config" ]; then
+            uci set openvpn.${instance}.config="$expected_config"
+            uci commit openvpn
+        fi
+    fi
+
+    return 0
+}
+
+# Select OpenVPN instance to manage
+select_openvpn_instance() {
+    echo ""
+    echo "=== Select OpenVPN Instance to Manage ==="
+    echo ""
+    echo "Current instance: $OVPN_INSTANCE"
+    echo ""
+
+    # List existing instances
+    echo "Available instances:"
+    echo ""
+
+    local instance_count=0
+    local instances=""
+
+    # Get list of instances
+    if uci show openvpn >/dev/null 2>&1; then
+        instances=$(uci show openvpn 2>/dev/null | grep "=openvpn$" | cut -d'.' -f2 | cut -d'=' -f1)
+
+        for inst in $instances; do
+            instance_count=$((instance_count + 1))
+            enabled=$(uci get openvpn.${inst}.enabled 2>/dev/null || echo "0")
+
+            if [ "$enabled" = "1" ]; then
+                status="enabled"
+            else
+                status="disabled"
+            fi
+
+            if [ "$inst" = "$OVPN_INSTANCE" ]; then
+                echo "  $instance_count) $inst ($status) [CURRENT]"
+            else
+                echo "  $instance_count) $inst ($status)"
+            fi
+        done
+    fi
+
+    echo ""
+    echo "  n) Create new instance"
+    echo "  c) Cancel"
+    echo ""
+
+    if [ $instance_count -eq 0 ]; then
+        echo "No instances found. Creating default 'server' instance..."
+        OVPN_INSTANCE="server"
+        ensure_uci_instance "$OVPN_INSTANCE"
+        update_instance_paths
+        echo "Default instance 'server' created and selected"
+        return 0
+    fi
+
+    read -p "Select option: " choice
+
+    case "$choice" in
+        [0-9]*)
+            # User selected a number
+            selected_instance=$(echo "$instances" | sed -n "${choice}p")
+
+            if [ -n "$selected_instance" ]; then
+                OVPN_INSTANCE="$selected_instance"
+                update_instance_paths
+                echo ""
+                echo "Selected instance: $OVPN_INSTANCE"
+            else
+                echo "Invalid selection"
+                return 1
+            fi
+            ;;
+        n|N)
+            # Create new instance
+            echo ""
+            read -p "Enter new instance name (>3 chars, alphanumeric + underscore): " new_instance
+
+            if validate_instance_name "$new_instance"; then
+                # Check if already exists
+                if uci get openvpn.${new_instance} >/dev/null 2>&1; then
+                    echo "Error: Instance '$new_instance' already exists"
+                    return 1
+                fi
+
+                OVPN_INSTANCE="$new_instance"
+                ensure_uci_instance "$OVPN_INSTANCE"
+                update_instance_paths
+                echo ""
+                echo "Created and selected instance: $OVPN_INSTANCE"
+            else
+                return 1
+            fi
+            ;;
+        c|C)
+            echo "Cancelled"
+            return 1
+            ;;
+        *)
+            echo "Invalid option"
+            return 1
+            ;;
+    esac
+
+    return 0
+}
+
+# Function to check and validate DHCPv6 prerequisites
+check_dhcpv6_prerequisites() {
+    echo ""
+    echo "=== DHCPv6 Mode Prerequisites Check ==="
+    echo ""
+
+    local all_ok=1
+
+    # Check if odhcpd is installed
+    echo "Checking for odhcpd package..."
+    if opkg list-installed | grep -q "^odhcpd "; then
+        echo "  ✓ odhcpd is installed"
+    else
+        echo "  ✗ odhcpd is NOT installed"
+        echo ""
+        echo "    To install: opkg update && opkg install odhcpd"
+        all_ok=0
+    fi
+
+    echo ""
+
+    # Check if odhcpd is running
+    if [ $all_ok -eq 1 ]; then
+        echo "Checking if odhcpd is running..."
+        if pgrep odhcpd >/dev/null 2>&1; then
+            echo "  ✓ odhcpd service is running"
+        else
+            echo "  ✗ odhcpd service is NOT running"
+            echo ""
+            echo "    To start: /etc/init.d/odhcpd start"
+            echo "    To enable at boot: /etc/init.d/odhcpd enable"
+            all_ok=0
+        fi
+        echo ""
+    fi
+
+    # Show configuration requirements
+    echo "=== Manual Configuration Required ==="
+    echo ""
+    echo "DHCPv6 mode requires manual odhcpd configuration:"
+    echo ""
+    echo "1. Configure odhcpd for VPN interface in /etc/config/dhcp:"
+    echo "   config dhcp 'vpn'"
+    echo "       option interface 'vpn'"
+    echo "       option ra 'server'"
+    echo "       option dhcpv6 'server'"
+    echo "       option ra_management '1'"
+    echo ""
+    echo "2. Configure network interface in /etc/config/network:"
+    echo "   config interface 'vpn'"
+    echo "       option proto 'none'"
+    echo "       option ifname 'tun0'"
+    echo ""
+    echo "3. Restart services:"
+    echo "   /etc/init.d/network reload"
+    echo "   /etc/init.d/odhcpd restart"
+    echo ""
+    echo "WARNING: This is an ADVANCED configuration!"
+    echo "For most users, STATIC mode is simpler and recommended."
+    echo ""
+
+    if [ $all_ok -eq 1 ]; then
+        echo "Prerequisites: OK (but manual configuration still needed)"
+        return 0
+    else
+        echo "Prerequisites: FAILED (install/start odhcpd first)"
+        return 1
+    fi
+}
 
 # Function to detect IPv6 prefix delegation from WAN
 detect_ipv6_prefix() {
@@ -249,6 +555,13 @@ auto_detect_fqdn() {
 # Ensure output directory exists
 if [ ! -d "$OVPN_DIR" ]; then
     mkdir -p "$OVPN_DIR"
+fi
+
+# Ensure default UCI instance exists on first run
+if ! uci show openvpn >/dev/null 2>&1 || ! uci get openvpn.${OVPN_INSTANCE} >/dev/null 2>&1; then
+    echo "Initializing default OpenVPN instance: $OVPN_INSTANCE"
+    ensure_uci_instance "$OVPN_INSTANCE"
+    echo ""
 fi
 
 # Function to configure VPN firewall zones
@@ -524,6 +837,20 @@ EOF
 
     # Add IPv6 configuration if enabled
     if [ "$OVPN_IPV6_ENABLE" = "yes" ]; then
+        # Warn if DHCPv6 mode is selected (not fully automated yet)
+        if [ "$OVPN_IPV6_MODE" = "dhcpv6" ]; then
+            echo ""
+            echo "WARNING: DHCPv6 mode selected but configuration is STATIC"
+            echo "The script will generate a static IPv6 configuration."
+            echo "You must manually configure odhcpd for DHCPv6 lease tracking."
+            echo ""
+            read -p "Continue with static IPv6 configuration? (y/n): " continue_static
+            if [ "$continue_static" != "y" ] && [ "$continue_static" != "Y" ]; then
+                echo "Configuration generation cancelled."
+                return 1
+            fi
+        fi
+
         # Calculate IPv6 server and client addresses for ifconfig-ipv6
         OVPN_IPV6_SERVER="${OVPN_IPV6_POOL%::*}::1"
         OVPN_IPV6_CLIENT="${OVPN_IPV6_POOL%::*}::2"
@@ -592,9 +919,19 @@ EOF
     echo ""
     echo "Server configuration created: $OVPN_SERVER_CONF"
     echo ""
+
+    # Ensure UCI instance exists and is configured
+    echo "Updating UCI configuration..."
+    ensure_uci_instance "$OVPN_INSTANCE"
+    uci set openvpn.${OVPN_INSTANCE}.config="$OVPN_SERVER_CONF"
+    uci set openvpn.${OVPN_INSTANCE}.enabled=1
+    uci commit openvpn
+    echo "UCI instance '$OVPN_INSTANCE' updated"
+    echo ""
+
     echo "IMPORTANT: Review the configuration file before restarting OpenVPN"
     echo ""
-    
+
     read -p "View the generated configuration? (y/n): " view
     if [ "$view" = "y" ] || [ "$view" = "Y" ]; then
         echo ""
@@ -603,16 +940,16 @@ EOF
         echo "=== End of Configuration ==="
         echo ""
     fi
-    
+
     # Check firewall
     check_firewall
-    
-    read -p "Restart OpenVPN daemon to apply changes? (y/n): " restart
+
+    read -p "Restart OpenVPN instance '$OVPN_INSTANCE' to apply changes? (y/n): " restart
     if [ "$restart" = "y" ] || [ "$restart" = "Y" ]; then
-        /etc/init.d/openvpn restart
-        echo "OpenVPN daemon restarted"
+        /etc/init.d/openvpn restart "$OVPN_INSTANCE"
+        echo "OpenVPN instance '$OVPN_INSTANCE' restarted"
     else
-        echo "Remember to restart OpenVPN daemon: /etc/init.d/openvpn restart"
+        echo "Remember to restart OpenVPN: /etc/init.d/openvpn restart $OVPN_INSTANCE"
     fi
 }
 
@@ -1063,11 +1400,98 @@ monitor_vpn_usage() {
     echo "=== VPN Address Usage Monitor ==="
     echo ""
 
-    # Check if OpenVPN is running
-    if ! pgrep -x openvpn >/dev/null; then
-        echo "OpenVPN is not running"
+    # Check if any OpenVPN process is running
+    if ! pgrep openvpn >/dev/null; then
+        echo "No OpenVPN processes are running"
         return 1
     fi
+
+    # List available instances
+    echo "Available OpenVPN instances:"
+    echo ""
+
+    local instance_count=0
+    local instances=""
+
+    if uci show openvpn >/dev/null 2>&1; then
+        instances=$(uci show openvpn 2>/dev/null | grep "=openvpn$" | cut -d'.' -f2 | cut -d'=' -f1)
+
+        for inst in $instances; do
+            instance_count=$((instance_count + 1))
+
+            # Check if running
+            if pgrep -f "[o]penvpn.*${inst}" >/dev/null 2>&1; then
+                status="RUNNING"
+            else
+                status="stopped"
+            fi
+
+            echo "  $instance_count) $inst ($status)"
+        done
+    fi
+
+    echo ""
+    echo "  a) Monitor all instances"
+    echo "  c) Cancel"
+    echo ""
+
+    if [ $instance_count -eq 0 ]; then
+        echo "No UCI instances found"
+        return 1
+    fi
+
+    read -p "Select instance to monitor: " choice
+
+    local selected_instance=""
+
+    case "$choice" in
+        [0-9]*)
+            # User selected a number
+            selected_instance=$(echo "$instances" | sed -n "${choice}p")
+
+            if [ -z "$selected_instance" ]; then
+                echo "Invalid selection"
+                return 1
+            fi
+            ;;
+        a|A)
+            # Monitor all instances
+            selected_instance="all"
+            ;;
+        c|C)
+            echo "Cancelled"
+            return 0
+            ;;
+        *)
+            echo "Invalid option"
+            return 1
+            ;;
+    esac
+
+    echo ""
+
+    # Monitor selected instance(s)
+    if [ "$selected_instance" = "all" ]; then
+        # Monitor all instances
+        for inst in $instances; do
+            monitor_single_instance "$inst"
+        done
+    else
+        # Monitor single instance
+        monitor_single_instance "$selected_instance"
+    fi
+
+    echo ""
+}
+
+# Helper function to monitor a single instance
+monitor_single_instance() {
+    local instance="$1"
+
+    echo "=================================================="
+    echo "Monitoring Instance: $instance"
+    echo "=================================================="
+    echo ""
 
     # Find tun interfaces
     tun_interfaces=$(ip link show | grep -o "tun[0-9]*" | sort -u)
@@ -1186,17 +1610,18 @@ monitor_vpn_usage() {
         echo ""
 
         # Force OpenVPN to update status file by sending SIGUSR2
-        openvpn_pid=$(pgrep -x openvpn)
+        # Find PID for this specific instance
+        openvpn_pid=$(pgrep -f "[o]penvpn.*${instance}" | head -1)
         if [ -n "$openvpn_pid" ]; then
-            echo "Updating status file (sending SIGUSR2 to PID $openvpn_pid)..."
+            echo "Updating status file for instance '$instance' (sending SIGUSR2 to PID $openvpn_pid)..."
             kill -USR2 $openvpn_pid 2>/dev/null
 
             # Wait briefly for status file to be written
             sleep 1
             echo ""
         else
-            echo "Warning: Could not find OpenVPN process to trigger status update"
-            echo "Status file may be outdated"
+            echo "Warning: Could not find OpenVPN process for instance '$instance'"
+            echo "Status file may be outdated or instance not running"
             echo ""
         fi
 
@@ -1278,10 +1703,30 @@ toggle_ipv6() {
                 echo "  dhcpv6  - Advanced DHCPv6-PD with tracked leases (for advanced users)"
                 echo ""
                 read -p "Enter mode (static/dhcpv6): " new_mode
-                if [ "$new_mode" = "static" ] || [ "$new_mode" = "dhcpv6" ]; then
+                if [ "$new_mode" = "static" ]; then
                     OVPN_IPV6_MODE="$new_mode"
                     echo "Mode changed to: $OVPN_IPV6_MODE"
                     echo "Note: Regenerate server.conf (option 1) to apply changes"
+                elif [ "$new_mode" = "dhcpv6" ]; then
+                    echo ""
+                    echo "WARNING: DHCPv6 mode requires manual configuration"
+                    echo ""
+                    read -p "Check prerequisites and show configuration guide? (y/n): " check
+                    if [ "$check" = "y" ] || [ "$check" = "Y" ]; then
+                        check_dhcpv6_prerequisites
+                        echo ""
+                        read -p "Continue with DHCPv6 mode anyway? (yes/no): " confirm_dhcpv6
+                        if [ "$confirm_dhcpv6" = "yes" ]; then
+                            OVPN_IPV6_MODE="dhcpv6"
+                            echo "Mode changed to: $OVPN_IPV6_MODE"
+                            echo "Note: You MUST configure odhcpd manually before this will work"
+                            echo "Note: Regenerate server.conf (option 1) to apply changes"
+                        else
+                            echo "Staying with current mode: $OVPN_IPV6_MODE"
+                        fi
+                    else
+                        echo "Cancelled. Staying with current mode: $OVPN_IPV6_MODE"
+                    fi
                 else
                     echo "Invalid mode. No changes made."
                 fi
@@ -1345,10 +1790,29 @@ toggle_ipv6() {
             read -p "Select mode (1-2): " mode_choice
 
             if [ "$mode_choice" = "2" ]; then
-                OVPN_IPV6_MODE="dhcpv6"
                 echo ""
-                echo "DHCPv6 mode selected"
-                echo "NOTE: This mode requires additional odhcpd configuration"
+                echo "WARNING: DHCPv6 mode is ADVANCED and requires manual configuration"
+                echo ""
+                read -p "Check prerequisites and show configuration guide? (y/n): " check
+                if [ "$check" = "y" ] || [ "$check" = "Y" ]; then
+                    check_dhcpv6_prerequisites
+                    echo ""
+                    read -p "Continue with DHCPv6 mode anyway? (yes/no): " confirm_dhcpv6
+                    if [ "$confirm_dhcpv6" = "yes" ]; then
+                        OVPN_IPV6_MODE="dhcpv6"
+                        echo ""
+                        echo "DHCPv6 mode selected"
+                        echo "NOTE: You MUST configure odhcpd manually before this will work"
+                    else
+                        OVPN_IPV6_MODE="static"
+                        echo ""
+                        echo "Falling back to Static pool mode (recommended)"
+                    fi
+                else
+                    OVPN_IPV6_MODE="static"
+                    echo ""
+                    echo "Static pool mode selected (default)"
+                fi
             else
                 OVPN_IPV6_MODE="static"
                 echo ""
@@ -1414,12 +1878,74 @@ key_management_first_time() {
 
 }
 
+# Function to install LuCI OpenVPN web interface
+install_luci_openvpn() {
+    echo ""
+    echo "=== Install LuCI OpenVPN Web Interface ==="
+    echo ""
+    echo "This will install luci-app-openvpn for web-based management"
+    echo "The LuCI app provides:"
+    echo "  - Web interface for managing OpenVPN instances"
+    echo "  - Start/stop/restart controls"
+    echo "  - Configuration file editing"
+    echo "  - Status monitoring"
+    echo ""
+    echo "This script and LuCI will share the same UCI configuration"
+    echo "Changes made in one will be visible in the other"
+    echo ""
+    echo "Requirements:"
+    echo "  - Internet connection"
+    echo "  - LuCI web interface installed"
+    echo ""
+    read -p "Continue with installation? (yes/no): " confirm
+
+    if [ "$confirm" != "yes" ]; then
+        echo "Installation cancelled"
+        return 0
+    fi
+
+    echo ""
+    echo "Updating package lists..."
+    if ! opkg update; then
+        echo "Error: Failed to update package lists"
+        echo "Check your internet connection"
+        return 1
+    fi
+
+    echo ""
+    echo "Installing luci-app-openvpn..."
+    if opkg install luci-app-openvpn; then
+        echo ""
+        echo "Installation complete!"
+        echo ""
+        echo "Access the LuCI OpenVPN interface at:"
+        echo "  Web Interface > Services > OpenVPN"
+        echo "  or"
+        echo "  Web Interface > System > OpenVPN"
+        echo ""
+        echo "Note: You may need to refresh your browser to see the new menu"
+    else
+        echo ""
+        echo "Error: Installation failed"
+        echo "The package may already be installed or unavailable"
+        return 1
+    fi
+
+    echo ""
+}
+
 # Main menu
 while true; do
     echo ""
     echo "=================================================="
     echo "   OpenWRT OpenVPN Management"
     echo "=================================================="
+    echo "Currently managing: [$OVPN_INSTANCE]"
+    echo ""
+    echo "Instance Management:"
+    echo "  i) Select/Create OpenVPN instance"
+    echo "  l) List all OpenVPN instances"
+    echo ""
     echo "Server Configuration:"
     echo "  0) Auto-Detect server settings"
     echo "  1) Generate/Update server.conf"
@@ -1438,21 +1964,30 @@ while true; do
     echo " 10) Generate all .ovpn config files"
     echo " 11) Generate single .ovpn config file"
     echo ""
-    echo "EasyRSA Management:"
+    echo "Setup & Integration:"
     echo " 12) Install and initialize EasyRSA for OpenVPN"
+    echo " 13) Install LuCI OpenVPN web interface"
     echo ""
     echo "Firewall Management:"
-    echo " 13) Check firewall configuration"
-    echo " 14) Configure VPN firewall access"
+    echo " 14) Check firewall configuration"
+    echo " 15) Configure VPN firewall access"
     echo ""
     echo "VPN Monitoring:"
-    echo " 15) Monitor VPN address usage (IPv4 & IPv6)"
+    echo " 16) Monitor VPN address usage (IPv4 & IPv6)"
     echo ""
-    echo " 16) Exit"
+    echo " 17) Exit"
     echo ""
-    read -p "Select an option (0-16): " choice
+    read -p "Select an option: " choice
     
     case $choice in
+        i|I)
+            select_openvpn_instance
+            read -p "Press Enter to continue..."
+            ;;
+        l|L)
+            list_openvpn_instances
+            read -p "Press Enter to continue..."
+            ;;
 	0)
             auto_detect_fqdn
             ;;
@@ -1505,23 +2040,27 @@ while true; do
             key_management_first_time
             ;;
         13)
-            check_firewall
+            install_luci_openvpn
             read -p "Press Enter to continue..."
             ;;
         14)
-            configure_vpn_firewall
+            check_firewall
             read -p "Press Enter to continue..."
             ;;
         15)
-            monitor_vpn_usage
+            configure_vpn_firewall
             read -p "Press Enter to continue..."
             ;;
         16)
+            monitor_vpn_usage
+            read -p "Press Enter to continue..."
+            ;;
+        17)
             echo "Exiting..."
             exit 0
             ;;
         *)
-            echo "Invalid option. Please select 0-16."
+            echo "Invalid option."
             ;;
     esac
 done
