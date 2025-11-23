@@ -16,61 +16,6 @@ chmod 775 openvpn_server_management.sh
 ./openvpn_server_management.sh
 ```
 
-# FEATURES
-
-
-# UCI Management Integration
-
-## UCI Instance Management
-  - Script now fully integrates with OpenWrt's UCI configuration system
-  - All instances are stored in /etc/config/openvpn
-  - Compatible with luci-app-openvpn - changes sync between both interfaces
-  - Auto-creates default "server" instance on first run
-
-  UCI Configuration Example
-
-  # View all instances
-  uci show openvpn
-
-  # Example output:
-  # openvpn.server=openvpn
-  # openvpn.server.enabled='1'
-  # openvpn.server.config='/etc/openvpn/server.conf'
-
-### Instance Selection (Menu options i and l)
-  - Option i: Select/Create OpenVPN instance
-    - Lists all existing instances with status (enabled/disabled, running/stopped)
-    - Create new instances (validated: >3 chars, alphanumeric + underscore)
-    - Switch between instances during session
-  - Option l: List all OpenVPN instances
-    - Shows instance status, config file path, and running state
-
-## LuCI Integration
-  - Install luci-app-openvpn with one command
-  - Automatic opkg update and package installation
-  - Changes made in LuCI web interface appear in this script and vice versa
-
-
-## OpenVPN Monitoring
-  - Lists all available instances
-  - Select specific instance to monitor OR monitor all instances
-  - Sends SIGUSR2 to correct instance-specific process
-  - Shows per-instance network status and client connections
-
-## Instance-Aware Operations
-  - All operations now use the selected instance
-  - Config files: /etc/openvpn/${INSTANCE_NAME}.conf
-  - Process control: /etc/init.d/openvpn restart ${INSTANCE_NAME}
-  - Menu shows: "Currently managing: [server]"
-
-  File Structure
-
-  /etc/config/openvpn          # UCI configuration (shared with LuCI)
-  /etc/openvpn/
-    ├── server.conf            # Default server instance config
-    ├── office_vpn.conf        # Example: additional instance
-    └── *.conf                 # Instance configs
-
 # First-Time Setup Guide
 
 This guide assumes you're starting from scratch with nothing installed. Follow these steps to get a fully functional OpenVPN server with your first client configuration.
@@ -220,9 +165,9 @@ This will:
 14) Check firewall configuration
 ```
 
-Confirms:
-- ✅ VPN interface in LAN zone
-- ✅ OpenVPN port open on WAN
+Confirms :
+- VPN interface in LAN zone
+- OpenVPN port open on WAN
 
 ### Step 7: Restart OpenVPN
 
@@ -269,7 +214,7 @@ scp root@192.168.1.1:/root/ovpn_config_out/laptop.ovpn ~/Downloads/
 ```
 
 **Or via LuCI Web Interface:**
-1. Navigate to System → File Browser (if available)
+1. Navigate to System → File Browser (if available) ( )
 2. Or use System → Software → upload/download files
 
 ### Step 10: Connect Your Client
@@ -292,6 +237,76 @@ ping6 google.com        # Test IPv6 (if enabled)
 curl -4 ifconfig.co     # Check IPv4 address
 curl -6 ifconfig.co     # Check IPv6 address (if enabled)
 ```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+# FEATURES
+
+
+## UCI Management Integration
+  - Script now fully integrates with OpenWrt's UCI configuration system
+  - All instances are stored in /etc/config/openvpn
+  - Compatible with luci-app-openvpn - changes sync between both interfaces
+  - Auto-creates default "server" instance on first run
+
+  UCI Configuration Example
+
+```
+  # View all instances
+  uci show openvpn
+
+  # Example output:
+  # openvpn.server=openvpn
+  # openvpn.server.enabled='1'
+  # openvpn.server.config='/etc/openvpn/server.conf'
+```
+
+### Instance Selection (Menu options i and l)
+  - Option i: Select/Create OpenVPN instance
+    - Lists all existing instances with status (enabled/disabled, running/stopped)
+    - Create new instances (validated: >3 chars, alphanumeric + underscore)
+    - Switch between instances during session
+  - Option l: List all OpenVPN instances
+    - Shows instance status, config file path, and running state
+
+## LuCI Integration
+  - Install luci-app-openvpn with one command
+  - Automatic opkg update and package installation
+  - Changes made in LuCI web interface appear in this script and vice versa
+
+
+## OpenVPN Monitoring
+  - Lists all available instances
+  - Select specific instance to monitor OR monitor all instances
+  - Sends SIGUSR2 to correct instance-specific process
+  - Shows per-instance network status and client connections
+
+## Instance-Aware Operations
+  - All operations now use the selected instance
+  - Config files: /etc/openvpn/${INSTANCE_NAME}.conf
+  - Process control: /etc/init.d/openvpn restart ${INSTANCE_NAME}
+  - Menu shows: "Currently managing: [server]"
+
+  File Structure
+
+  /etc/config/openvpn          # UCI configuration (shared with LuCI)
+  /etc/openvpn/
+    ├── server.conf            # Default server instance config
+    ├── office_vpn.conf        # Example: additional instance
+    └── *.conf                 # Instance configs
+
 
 ## Quick Reference - Common Operations
 
