@@ -14,9 +14,18 @@ OVPN_PORT="1194"              # VPN port
 OVPN_PROTO="udp"              # Protocol: udp or tcp
 OVPN_POOL="10.8.0.0 255.255.255.0"  # VPN subnet
 
+# IPv6 configuration - EDIT THESE VALUES
+OVPN_IPV6_ENABLE="yes"        # Enable IPv6: yes or no
+# Use Unique Local Address (ULA) - Generate random at https://unique-local-ipv6.com/
+# Format: fdXX:XXXX:XXXX::/48 then use /64 subnet from that
+OVPN_IPV6_POOL="fd42:4242:4242:1194::/64"  # IPv6 VPN subnet (ULA recommended)
+
 # Auto-detect DNS and domain from OpenWrt UCI
 OVPN_DNS="${OVPN_POOL%.* *}.1"
 OVPN_DOMAIN=$(uci get dhcp.@dnsmasq[0].domain 2>/dev/null || echo "lan")
+
+# Auto-detect IPv6 DNS (first address in IPv6 pool)
+OVPN_IPV6_DNS="${OVPN_IPV6_POOL%::*}::1"
 
 # Auto-Detect DDNS configured name, Fetch server address configured elsewhere
 auto_detect_fqdn() {
@@ -25,8 +34,11 @@ auto_detect_fqdn() {
     echo "Current script-default settings:"
     echo "  Port: $OVPN_PORT"
     echo "  Protocol: $OVPN_PROTO"
-    echo "  VPN Subnet: $OVPN_POOL"
-    echo "  DNS Server: $OVPN_DNS"
+    echo "  IPv4 VPN Subnet: $OVPN_POOL"
+    echo "  IPv4 DNS Server: $OVPN_DNS"
+    echo "  IPv6 Enabled: $OVPN_IPV6_ENABLE"
+    echo "  IPv6 VPN Subnet: $OVPN_IPV6_POOL"
+    echo "  IPv6 DNS Server: $OVPN_IPV6_DNS"
     echo "  Domain: $OVPN_DOMAIN"
     echo "  VPN Server: $OVPN_SERV"
     echo ""
@@ -53,10 +65,26 @@ auto_detect_fqdn() {
         fi
 
         # Detect server pool (format: "server 10.8.0.0 255.255.255.0")
-        DETECTED_POOL=$(grep "^server " "$OVPN_SERVER_CONF" | awk '{print $2, $3}')
+        DETECTED_POOL=$(grep "^server " "$OVPN_SERVER_CONF" | grep -v "server-ipv6" | awk '{print $2, $3}')
         if [ -n "$DETECTED_POOL" ]; then
             OVPN_POOL="$DETECTED_POOL"
-            echo "  Detected VPN subnet: $OVPN_POOL"
+            echo "  Detected IPv4 VPN subnet: $OVPN_POOL"
+        fi
+
+        # Detect IPv6 pool (format: "server-ipv6 fd42:4242:4242:1194::/64")
+        DETECTED_IPV6_POOL=$(grep "^server-ipv6 " "$OVPN_SERVER_CONF" | awk '{print $2}')
+        if [ -n "$DETECTED_IPV6_POOL" ]; then
+            OVPN_IPV6_POOL="$DETECTED_IPV6_POOL"
+            OVPN_IPV6_ENABLE="yes"
+            OVPN_IPV6_DNS="${OVPN_IPV6_POOL%::*}::1"
+            echo "  Detected IPv6 VPN subnet: $OVPN_IPV6_POOL"
+            echo "  IPv6 enabled"
+        else
+            # Check if IPv6 is explicitly disabled
+            if grep -q "^#.*server-ipv6" "$OVPN_SERVER_CONF"; then
+                OVPN_IPV6_ENABLE="no"
+                echo "  IPv6 is disabled in server.conf"
+            fi
         fi
 
         echo ""
@@ -116,8 +144,13 @@ auto_detect_fqdn() {
     echo "=== Final Auto-Detected Settings ==="
     echo "  Port: $OVPN_PORT"
     echo "  Protocol: $OVPN_PROTO"
-    echo "  VPN Subnet: $OVPN_POOL"
-    echo "  DNS Server: $OVPN_DNS"
+    echo "  IPv4 VPN Subnet: $OVPN_POOL"
+    echo "  IPv4 DNS Server: $OVPN_DNS"
+    echo "  IPv6 Enabled: $OVPN_IPV6_ENABLE"
+    if [ "$OVPN_IPV6_ENABLE" = "yes" ]; then
+        echo "  IPv6 VPN Subnet: $OVPN_IPV6_POOL"
+        echo "  IPv6 DNS Server: $OVPN_IPV6_DNS"
+    fi
     echo "  Domain: $OVPN_DOMAIN"
     echo "  VPN Server: $OVPN_SERV"
     echo ""
@@ -136,36 +169,39 @@ configure_vpn_firewall() {
     echo ""
     echo "This will configure the firewall to:"
     echo "  1. Add VPN interface (tun+) to LAN zone (trusted)"
-    echo "  2. Allow OpenVPN port ${OVPN_PORT}/${OVPN_PROTO} from WAN"
+    echo "  2. Allow OpenVPN port ${OVPN_PORT}/${OVPN_PROTO} from WAN (IPv4 & IPv6)"
     echo "  3. Give VPN clients same access as LAN devices"
+    if [ "$OVPN_IPV6_ENABLE" = "yes" ]; then
+        echo "  4. Enable IPv6 forwarding for VPN"
+    fi
     echo ""
-    
+
     # Check if firewall config exists
     if ! uci show firewall >/dev/null 2>&1; then
         echo "ERROR: Cannot access firewall configuration"
         return 1
     fi
-    
+
     read -p "Continue with firewall configuration? (yes/no): " confirm
-    
+
     if [ "$confirm" != "yes" ]; then
         echo "Operation cancelled."
         return 0
     fi
-    
+
     echo ""
     echo "Configuring firewall..."
-    
+
     # Rename zones for easier reference (if not already named)
     uci rename firewall.@zone[0]="lan" 2>/dev/null
     uci rename firewall.@zone[1]="wan" 2>/dev/null
-    
+
     # Remove tun+ from LAN zone if it exists, then add it fresh
     uci del_list firewall.lan.device="tun+" 2>/dev/null
     uci add_list firewall.lan.device="tun+"
-    
+
     echo "  Added tun+ interface to LAN zone"
-    
+
     # Delete existing OpenVPN rule if present, then create fresh
     uci -q delete firewall.ovpn
     uci set firewall.ovpn="rule"
@@ -174,26 +210,48 @@ configure_vpn_firewall() {
     uci set firewall.ovpn.dest_port="${OVPN_PORT}"
     uci set firewall.ovpn.proto="${OVPN_PROTO}"
     uci set firewall.ovpn.target="ACCEPT"
-    
-    echo "  Created OpenVPN WAN access rule"
-    
+    uci set firewall.ovpn.family="any"
+
+    echo "  Created OpenVPN WAN access rule (IPv4 & IPv6)"
+
+    # Enable IPv6 forwarding if IPv6 is enabled
+    if [ "$OVPN_IPV6_ENABLE" = "yes" ]; then
+        # Check if IPv6 forwarding is enabled
+        ipv6_forward=$(sysctl -n net.ipv6.conf.all.forwarding 2>/dev/null || echo "0")
+        if [ "$ipv6_forward" != "1" ]; then
+            echo "  Enabling IPv6 forwarding..."
+            sysctl -w net.ipv6.conf.all.forwarding=1 >/dev/null 2>&1
+
+            # Make it persistent
+            if ! grep -q "net.ipv6.conf.all.forwarding" /etc/sysctl.conf 2>/dev/null; then
+                echo "net.ipv6.conf.all.forwarding=1" >> /etc/sysctl.conf
+                echo "  IPv6 forwarding enabled (persistent)"
+            fi
+        else
+            echo "  IPv6 forwarding already enabled"
+        fi
+    fi
+
     # Commit changes
     uci commit firewall
-    
+
     echo ""
     echo "Firewall configuration updated"
     echo ""
-    
+
     read -p "Restart firewall to apply changes? (y/n): " restart
     if [ "$restart" = "y" ] || [ "$restart" = "Y" ]; then
         service firewall restart
         echo "Firewall restarted"
         echo ""
         echo "VPN clients will now have full LAN access"
+        if [ "$OVPN_IPV6_ENABLE" = "yes" ]; then
+            echo "IPv6 routing enabled for VPN clients"
+        fi
     else
         echo "Remember to restart firewall: service firewall restart"
     fi
-    
+
     echo ""
 }
 
@@ -302,8 +360,13 @@ generate_server_conf() {
     echo "Current settings:"
     echo "  Port: $OVPN_PORT"
     echo "  Protocol: $OVPN_PROTO"
-    echo "  VPN Subnet: $OVPN_POOL"
-    echo "  DNS Server: $OVPN_DNS"
+    echo "  IPv4 VPN Subnet: $OVPN_POOL"
+    echo "  IPv4 DNS Server: $OVPN_DNS"
+    echo "  IPv6 Enabled: $OVPN_IPV6_ENABLE"
+    if [ "$OVPN_IPV6_ENABLE" = "yes" ]; then
+        echo "  IPv6 VPN Subnet: $OVPN_IPV6_POOL"
+        echo "  IPv6 DNS Server: $OVPN_IPV6_DNS"
+    fi
     echo "  Domain: $OVPN_DOMAIN"
     echo ""
     
@@ -341,17 +404,30 @@ generate_server_conf() {
     # Generate server configuration
     cat << EOF > ${OVPN_SERVER_CONF}
 # OpenVPN Server Configuration
-# Generated by manage_openvpn_keys.sh
+# Generated by openvpn_server_management.sh
 
 # Network settings
 port ${OVPN_PORT}
 proto ${OVPN_PROTO}
 dev tun
 
-# Server mode and VPN subnet
+# Server mode and VPN subnet (IPv4)
 server ${OVPN_POOL}
 topology subnet
 
+EOF
+
+    # Add IPv6 configuration if enabled
+    if [ "$OVPN_IPV6_ENABLE" = "yes" ]; then
+        cat << EOF >> ${OVPN_SERVER_CONF}
+# IPv6 configuration
+server-ipv6 ${OVPN_IPV6_POOL}
+
+EOF
+    fi
+
+    # Continue with the rest of the configuration
+    cat << EOF >> ${OVPN_SERVER_CONF}
 # Certificate and key files
 ca ${OVPN_PKI}/ca.crt
 cert ${OVPN_PKI}/issued/server.crt
@@ -365,13 +441,27 @@ tls-crypt-v2 ${OVPN_PKI}/private/server.pem
 client-to-client
 keepalive 10 60
 
-# Push routes and DNS to clients
+# Push routes and DNS to clients (IPv4)
 push "redirect-gateway def1"
 push "dhcp-option DNS ${OVPN_DNS}"
 push "dhcp-option DOMAIN ${OVPN_DOMAIN}"
 push "persist-tun"
 push "persist-key"
 
+EOF
+
+    # Add IPv6 push routes if enabled
+    if [ "$OVPN_IPV6_ENABLE" = "yes" ]; then
+        cat << EOF >> ${OVPN_SERVER_CONF}
+# IPv6 push routes and DNS
+push "route-ipv6 2000::/3"
+push "dhcp-option DNS6 ${OVPN_IPV6_DNS}"
+
+EOF
+    fi
+
+    # Continue with security and logging
+    cat << EOF >> ${OVPN_SERVER_CONF}
 # Privileges and security
 user nobody
 group nogroup
@@ -855,6 +945,67 @@ revoke_client() {
     esac
 }
 
+# Function to toggle IPv6 configuration
+toggle_ipv6() {
+    echo ""
+    echo "=== IPv6 Configuration ==="
+    echo ""
+    echo "Current IPv6 status: $OVPN_IPV6_ENABLE"
+    echo ""
+
+    if [ "$OVPN_IPV6_ENABLE" = "yes" ]; then
+        echo "IPv6 is currently ENABLED"
+        echo "  IPv6 VPN Subnet: $OVPN_IPV6_POOL"
+        echo "  IPv6 DNS Server: $OVPN_IPV6_DNS"
+        echo ""
+        read -p "Disable IPv6 support? (yes/no): " confirm
+
+        if [ "$confirm" = "yes" ]; then
+            OVPN_IPV6_ENABLE="no"
+            echo ""
+            echo "IPv6 support disabled"
+            echo "Note: Regenerate server.conf (option 1) to apply changes"
+        else
+            echo "No changes made"
+        fi
+    else
+        echo "IPv6 is currently DISABLED"
+        echo ""
+        echo "Enabling IPv6 will:"
+        echo "  1. Add IPv6 subnet to VPN tunnel"
+        echo "  2. Push IPv6 routes to clients"
+        echo "  3. Enable IPv6 DNS for VPN clients"
+        echo ""
+        echo "Recommended: Use ULA (Unique Local Address) for private IPv6"
+        echo "Generate random ULA at: https://unique-local-ipv6.com/"
+        echo ""
+        read -p "Enable IPv6 support? (yes/no): " confirm
+
+        if [ "$confirm" = "yes" ]; then
+            echo ""
+            echo "Current IPv6 subnet: $OVPN_IPV6_POOL"
+            read -p "Enter IPv6 subnet (or press Enter to keep current): " new_ipv6_pool
+
+            if [ -n "$new_ipv6_pool" ]; then
+                OVPN_IPV6_POOL="$new_ipv6_pool"
+                OVPN_IPV6_DNS="${OVPN_IPV6_POOL%::*}::1"
+            fi
+
+            OVPN_IPV6_ENABLE="yes"
+            echo ""
+            echo "IPv6 support enabled"
+            echo "  IPv6 VPN Subnet: $OVPN_IPV6_POOL"
+            echo "  IPv6 DNS Server: $OVPN_IPV6_DNS"
+            echo ""
+            echo "Note: Regenerate server.conf (option 1) to apply changes"
+        else
+            echo "No changes made"
+        fi
+    fi
+
+    echo ""
+}
+
 key_management_first_time() {
 
     # Configuration parameters
@@ -862,16 +1013,16 @@ key_management_first_time() {
     export EASYRSA_TEMP_DIR="/tmp"
     export EASYRSA_CERT_EXPIRE="3650"
     export EASYRSA_BATCH="1"
- 
+
     # Remove and re-initialize PKI directory
     easyrsa init-pki
- 
+
     # Generate DH parameters
     easyrsa gen-dh
- 
+
     # Create a new CA
     easyrsa build-ca nopass
- 
+
     # Generate server keys and certificate
     easyrsa build-server-full server nopass
     openvpn --genkey tls-crypt-v2-server ${EASYRSA_PKI}/private/server.pem
@@ -888,6 +1039,7 @@ while true; do
     echo "  0) Auto-Detect server settings"
     echo "  1) Generate/Update server.conf"
     echo "  2) Restore server.conf from backup"
+    echo "  3) Toggle IPv6 support (Currently: $OVPN_IPV6_ENABLE)"
     echo ""
     echo "Certificate Management:"
     echo "  4) Create new client certificate"
@@ -921,6 +1073,10 @@ while true; do
             ;;
         2)
             restore_server_conf
+            ;;
+        3)
+            toggle_ipv6
+            read -p "Press Enter to continue..."
             ;;
         4)
             create_client
