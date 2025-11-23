@@ -31,14 +31,18 @@ OVPN_IPV6_DNS="${OVPN_IPV6_POOL%::*}::1"
 auto_detect_fqdn() {
 
     echo ""
-    echo "Current script-default settings:"
+    echo "Script default settings (if no config found):"
     echo "  Port: $OVPN_PORT"
     echo "  Protocol: $OVPN_PROTO"
     echo "  IPv4 VPN Subnet: $OVPN_POOL"
     echo "  IPv4 DNS Server: $OVPN_DNS"
-    echo "  IPv6 Enabled: $OVPN_IPV6_ENABLE"
-    echo "  IPv6 VPN Subnet: $OVPN_IPV6_POOL"
-    echo "  IPv6 DNS Server: $OVPN_IPV6_DNS"
+    if [ "$OVPN_IPV6_ENABLE" = "yes" ]; then
+        echo "  IPv6: ENABLED (will be configured)"
+        echo "    IPv6 VPN Subnet: $OVPN_IPV6_POOL"
+        echo "    IPv6 DNS Server: $OVPN_IPV6_DNS"
+    else
+        echo "  IPv6: DISABLED (will not be configured)"
+    fi
     echo "  Domain: $OVPN_DOMAIN"
     echo "  VPN Server: $OVPN_SERV"
     echo ""
@@ -78,12 +82,19 @@ auto_detect_fqdn() {
             OVPN_IPV6_ENABLE="yes"
             OVPN_IPV6_DNS="${OVPN_IPV6_POOL%::*}::1"
             echo "  Detected IPv6 VPN subnet: $OVPN_IPV6_POOL"
-            echo "  IPv6 enabled"
+            echo "  IPv6 is CURRENTLY CONFIGURED and active"
         else
             # Check if IPv6 is explicitly disabled
             if grep -q "^#.*server-ipv6" "$OVPN_SERVER_CONF"; then
                 OVPN_IPV6_ENABLE="no"
-                echo "  IPv6 is disabled in server.conf"
+                echo "  IPv6 is commented out (disabled) in server.conf"
+            else
+                echo "  IPv6 is NOT configured in server.conf"
+                if [ "$OVPN_IPV6_ENABLE" = "yes" ]; then
+                    echo "  (Script default is enabled - use option 1 to add IPv6)"
+                else
+                    echo "  (Script default is disabled - use option 3 to enable)"
+                fi
             fi
         fi
 
@@ -141,18 +152,27 @@ auto_detect_fqdn() {
     fi
 
     echo ""
-    echo "=== Final Auto-Detected Settings ==="
+    echo "=== Final Settings (will be used for new configs) ==="
+    echo ""
+    echo "Network Configuration:"
     echo "  Port: $OVPN_PORT"
     echo "  Protocol: $OVPN_PROTO"
-    echo "  IPv4 VPN Subnet: $OVPN_POOL"
-    echo "  IPv4 DNS Server: $OVPN_DNS"
-    echo "  IPv6 Enabled: $OVPN_IPV6_ENABLE"
-    if [ "$OVPN_IPV6_ENABLE" = "yes" ]; then
-        echo "  IPv6 VPN Subnet: $OVPN_IPV6_POOL"
-        echo "  IPv6 DNS Server: $OVPN_IPV6_DNS"
-    fi
+    echo "  VPN Server Address: $OVPN_SERV"
+    echo ""
+    echo "IPv4 Configuration:"
+    echo "  VPN Subnet: $OVPN_POOL"
+    echo "  DNS Server: $OVPN_DNS"
     echo "  Domain: $OVPN_DOMAIN"
-    echo "  VPN Server: $OVPN_SERV"
+    echo ""
+    echo "IPv6 Configuration:"
+    if [ "$OVPN_IPV6_ENABLE" = "yes" ]; then
+        echo "  Status: ENABLED - will be included in server.conf"
+        echo "  VPN Subnet: $OVPN_IPV6_POOL"
+        echo "  DNS Server: $OVPN_IPV6_DNS"
+    else
+        echo "  Status: DISABLED - will NOT be included in server.conf"
+        echo "  (Use option 3 to enable IPv6 support)"
+    fi
     echo ""
 
 }
@@ -357,17 +377,27 @@ generate_server_conf() {
     echo ""
     echo "=== Generate/Update OpenVPN Server Configuration ==="
     echo ""
-    echo "Current settings:"
+    echo "Configuration to be generated:"
+    echo ""
+    echo "Network Settings:"
     echo "  Port: $OVPN_PORT"
     echo "  Protocol: $OVPN_PROTO"
-    echo "  IPv4 VPN Subnet: $OVPN_POOL"
-    echo "  IPv4 DNS Server: $OVPN_DNS"
-    echo "  IPv6 Enabled: $OVPN_IPV6_ENABLE"
-    if [ "$OVPN_IPV6_ENABLE" = "yes" ]; then
-        echo "  IPv6 VPN Subnet: $OVPN_IPV6_POOL"
-        echo "  IPv6 DNS Server: $OVPN_IPV6_DNS"
-    fi
+    echo ""
+    echo "IPv4 Settings (will be included):"
+    echo "  VPN Subnet: $OVPN_POOL"
+    echo "  DNS Server: $OVPN_DNS"
     echo "  Domain: $OVPN_DOMAIN"
+    echo ""
+    echo "IPv6 Settings:"
+    if [ "$OVPN_IPV6_ENABLE" = "yes" ]; then
+        echo "  Status: ENABLED - IPv6 will be configured"
+        echo "  VPN Subnet: $OVPN_IPV6_POOL"
+        echo "  DNS Server: $OVPN_IPV6_DNS"
+        echo "  Routes: All IPv6 traffic (2000::/3) via VPN"
+    else
+        echo "  Status: DISABLED - IPv6 will NOT be configured"
+        echo "  (Use option 3 to enable IPv6 before generating config)"
+    fi
     echo ""
     
     if [ -f "$OVPN_SERVER_CONF" ]; then
