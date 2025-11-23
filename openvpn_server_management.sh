@@ -60,12 +60,78 @@ if [ ! -d "$OVPN_DIR" ]; then
     mkdir -p "$OVPN_DIR"
 fi
 
-# Function to check if OpenVPN port is open in firewall
+# Function to configure VPN firewall zones
+configure_vpn_firewall() {
+    echo ""
+    echo "=== Configure VPN Firewall Access ==="
+    echo ""
+    echo "This will configure the firewall to:"
+    echo "  1. Add VPN interface (tun+) to LAN zone (trusted)"
+    echo "  2. Allow OpenVPN port ${OVPN_PORT}/${OVPN_PROTO} from WAN"
+    echo "  3. Give VPN clients same access as LAN devices"
+    echo ""
+    
+    # Check if firewall config exists
+    if ! uci show firewall >/dev/null 2>&1; then
+        echo "ERROR: Cannot access firewall configuration"
+        return 1
+    fi
+    
+    read -p "Continue with firewall configuration? (yes/no): " confirm
+    
+    if [ "$confirm" != "yes" ]; then
+        echo "Operation cancelled."
+        return 0
+    fi
+    
+    echo ""
+    echo "Configuring firewall..."
+    
+    # Rename zones for easier reference (if not already named)
+    uci rename firewall.@zone[0]="lan" 2>/dev/null
+    uci rename firewall.@zone[1]="wan" 2>/dev/null
+    
+    # Remove tun+ from LAN zone if it exists, then add it fresh
+    uci del_list firewall.lan.device="tun+" 2>/dev/null
+    uci add_list firewall.lan.device="tun+"
+    
+    echo "  Added tun+ interface to LAN zone"
+    
+    # Delete existing OpenVPN rule if present, then create fresh
+    uci -q delete firewall.ovpn
+    uci set firewall.ovpn="rule"
+    uci set firewall.ovpn.name="Allow-OpenVPN"
+    uci set firewall.ovpn.src="wan"
+    uci set firewall.ovpn.dest_port="${OVPN_PORT}"
+    uci set firewall.ovpn.proto="${OVPN_PROTO}"
+    uci set firewall.ovpn.target="ACCEPT"
+    
+    echo "  Created OpenVPN WAN access rule"
+    
+    # Commit changes
+    uci commit firewall
+    
+    echo ""
+    echo "Firewall configuration updated"
+    echo ""
+    
+    read -p "Restart firewall to apply changes? (y/n): " restart
+    if [ "$restart" = "y" ] || [ "$restart" = "Y" ]; then
+        service firewall restart
+        echo "Firewall restarted"
+        echo ""
+        echo "VPN clients will now have full LAN access"
+    else
+        echo "Remember to restart firewall: service firewall restart"
+    fi
+    
+    echo ""
+}
+
+# Function to check if OpenVPN port is open in firewall and VPN zone configuration
 check_firewall() {
     echo ""
     echo "=== Checking Firewall Configuration ==="
-    echo ""
-    echo "Checking for OpenVPN port ${OVPN_PORT}/${OVPN_PROTO} on WAN..."
     echo ""
     
     # Check if firewall config exists
@@ -74,6 +140,32 @@ check_firewall() {
         echo "Firewall may not be configured or UCI is not available"
         return 1
     fi
+    
+    # Check 1: VPN interface in LAN zone
+    echo "1. Checking VPN interface configuration..."
+    echo ""
+    
+    vpn_in_lan=0
+    lan_devices=$(uci get firewall.@zone[0].device 2>/dev/null)
+    
+    # Check if tun+ is in the device list
+    echo "$lan_devices" | grep -q "tun+" && vpn_in_lan=1
+    
+    if [ $vpn_in_lan -eq 1 ]; then
+        echo "   [OK] VPN interface (tun+) is in LAN zone"
+        echo "        VPN clients have full LAN access"
+    else
+        echo "   [MISSING] VPN interface (tun+) is NOT in LAN zone"
+        echo "        VPN clients may have limited access"
+        echo ""
+        echo "   To add VPN interface to LAN zone, use option 14"
+    fi
+    
+    echo ""
+    
+    # Check 2: OpenVPN port open from WAN
+    echo "2. Checking OpenVPN port ${OVPN_PORT}/${OVPN_PROTO} on WAN..."
+    echo ""
     
     port_open=0
     rule_index=0
@@ -102,8 +194,8 @@ check_firewall() {
                [ "$rule_proto" = "tcpudp" ] || \
                [ -z "$rule_proto" ]; then
                 port_open=1
-                echo "  Firewall rule found: $rule_name"
-                echo "  Port ${OVPN_PORT}/${OVPN_PROTO} is OPEN on WAN"
+                echo "   [OK] Firewall rule found: $rule_name"
+                echo "        Port ${OVPN_PORT}/${OVPN_PROTO} is OPEN on WAN"
                 break
             fi
         fi
@@ -112,39 +204,22 @@ check_firewall() {
     done
     
     if [ $port_open -eq 0 ]; then
-        echo " WARNING: No firewall rule found!"
+        echo "   [MISSING] No firewall rule found!"
         echo ""
-        echo "OpenVPN port ${OVPN_PORT}/${OVPN_PROTO} does not appear to be open on WAN."
+        echo "   OpenVPN port ${OVPN_PORT}/${OVPN_PROTO} does not appear to be open on WAN."
         echo ""
-        echo "To open the port, run these commands:"
-        echo ""
-        echo "  uci add firewall rule"
-        echo "  uci set firewall.@rule[-1].name='Allow-OpenVPN'"
-        echo "  uci set firewall.@rule[-1].src='wan'"
-        echo "  uci set firewall.@rule[-1].dest_port='${OVPN_PORT}'"
-        echo "  uci set firewall.@rule[-1].proto='${OVPN_PROTO}'"
-        echo "  uci set firewall.@rule[-1].target='ACCEPT'"
-        echo "  uci commit firewall"
-        echo "  service firewall restart"
-        echo ""
-        read -p "Would you like to add this firewall rule now? (y/n): " add_rule
-        
-        if [ "$add_rule" = "y" ] || [ "$add_rule" = "Y" ]; then
-            echo ""
-            echo "Adding firewall rule..."
-            uci add firewall rule
-            uci set firewall.@rule[-1].name='Allow-OpenVPN'
-            uci set firewall.@rule[-1].src='wan'
-            uci set firewall.@rule[-1].dest_port="${OVPN_PORT}"
-            uci set firewall.@rule[-1].proto="${OVPN_PROTO}"
-            uci set firewall.@rule[-1].target='ACCEPT'
-            uci commit firewall
-            service firewall restart
-            
-            echo "✓ Firewall rule added and applied"
-        else
-            echo "Firewall rule not added. Remember to open port ${OVPN_PORT}/${OVPN_PROTO} manually."
-        fi
+        echo "   To configure firewall properly, use option 14"
+    fi
+    
+    echo ""
+    echo "=== Summary ==="
+    echo ""
+    
+    if [ $vpn_in_lan -eq 1 ] && [ $port_open -eq 1 ]; then
+        echo "  Firewall is properly configured for OpenVPN"
+    else
+        echo "  Firewall configuration incomplete"
+        echo "  Use option 14 to automatically configure firewall"
     fi
     
     echo ""
@@ -761,9 +836,12 @@ while true; do
     echo "EasyRSA Management:"
     echo " 12) Install and initialize EasyRSA for OpenVPN"
     echo ""
-    echo " 13) Exit"
+    echo "Firewall Management:"
+    echo " 14) Configure VPN firewall access"
     echo ""
-    read -p "Select an option (0-13): " choice
+    echo " 15) Exit"
+    echo ""
+    read -p "Select an option (0-15): " choice
     
     case $choice in
 	0)
@@ -814,16 +892,19 @@ while true; do
             fi
             read -p "Press Enter to continue..."
             ;;
-
-	12) 
+	    12) 
             key_management_first_time
             ;;
-        13)
+        14)
+            configure_vpn_firewall
+            read -p "Press Enter to continue..."
+            ;;
+        15)
             echo "Exiting..."
             exit 0
             ;;
         *)
-            echo "Invalid option. Please select 0-13."
+            echo "Invalid option. Please select 0-15."
             ;;
     esac
 done

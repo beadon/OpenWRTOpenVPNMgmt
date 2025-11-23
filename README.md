@@ -7,7 +7,7 @@ Tired of managing keys, ovpn files and all different parts piecemeal ? Use this 
 
 Assuming you have installed wget...
 ```
-opkg update; okpg install wget
+opkg update; opkg install wget
 ```
 Then if you are SSSH'd into OpenWRT now, grab then run it like this:
 ```
