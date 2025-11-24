@@ -37,6 +37,10 @@ OVPN_DOMAIN=$(uci get dhcp.@dnsmasq[0].domain 2>/dev/null || echo "lan")
 # Auto-detect IPv6 DNS (first address in IPv6 pool)
 OVPN_IPV6_DNS="${OVPN_IPV6_POOL%::*}::1"
 
+# Performance configuration for CPU-limited devices
+OVPN_COMPRESSION="no"           # Compression: no (default for CPU performance), lz4, lzo, or lz4-v2
+OVPN_BANDWIDTH_LIMIT="0"        # Bandwidth limit in bytes/sec (0 = disabled, e.g., 1000000 = ~8 Mbps)
+
 # Function to update dynamic paths when instance changes
 update_instance_paths() {
     OVPN_SERVER_CONF="/etc/openvpn/${OVPN_INSTANCE}.conf"
@@ -787,6 +791,19 @@ generate_server_conf() {
         echo "  (Use option 3 to enable IPv6 before generating config)"
     fi
     echo ""
+    echo "Performance Settings:"
+    if [ "$OVPN_COMPRESSION" = "no" ]; then
+        echo "  Compression: DISABLED (recommended for CPU-limited routers)"
+    else
+        echo "  Compression: $OVPN_COMPRESSION (may impact CPU performance)"
+    fi
+    if [ "$OVPN_BANDWIDTH_LIMIT" -gt 0 ] 2>/dev/null; then
+        OVPN_BW_MBPS=$(awk "BEGIN {printf \"%.2f\", ($OVPN_BANDWIDTH_LIMIT * 8) / 1000000}")
+        echo "  Bandwidth Limit: $OVPN_BANDWIDTH_LIMIT bytes/sec (~${OVPN_BW_MBPS} Mbps)"
+    else
+        echo "  Bandwidth Limit: DISABLED (unlimited)"
+    fi
+    echo ""
     
     if [ -f "$OVPN_SERVER_CONF" ]; then
         echo "WARNING: Existing server.conf found at $OVPN_SERVER_CONF"
@@ -911,7 +928,40 @@ persist-key
 status /var/log/openvpn-status.log
 log-append /var/log/openvpn.log
 verb 3
+EOF
 
+    # Add performance settings (compression and bandwidth)
+    cat << EOF >> ${OVPN_SERVER_CONF}
+
+# Performance settings for CPU-limited devices
+EOF
+
+    # Add compression setting
+    if [ "$OVPN_COMPRESSION" = "no" ]; then
+        cat << EOF >> ${OVPN_SERVER_CONF}
+# Compression disabled (recommended for CPU-limited routers)
+compress
+
+EOF
+    elif [ "$OVPN_COMPRESSION" = "lz4" ] || [ "$OVPN_COMPRESSION" = "lzo" ] || [ "$OVPN_COMPRESSION" = "lz4-v2" ]; then
+        cat << EOF >> ${OVPN_SERVER_CONF}
+# Compression enabled (may impact CPU performance)
+compress ${OVPN_COMPRESSION}
+
+EOF
+    fi
+
+    # Add bandwidth limiting if enabled
+    if [ "$OVPN_BANDWIDTH_LIMIT" -gt 0 ] 2>/dev/null; then
+        cat << EOF >> ${OVPN_SERVER_CONF}
+# Bandwidth limiting (${OVPN_BANDWIDTH_LIMIT} bytes/sec)
+shaper ${OVPN_BANDWIDTH_LIMIT}
+
+EOF
+    fi
+
+    # Add CRL section
+    cat << EOF >> ${OVPN_SERVER_CONF}
 # Certificate Revocation List (uncomment after first revocation)
 # crl-verify ${OVPN_PKI}/crl.pem
 EOF
@@ -1866,6 +1916,107 @@ toggle_ipv6() {
     echo ""
 }
 
+# Function to configure performance settings
+configure_performance() {
+    echo ""
+    echo "=== Performance Configuration ==="
+    echo ""
+    echo "Current Performance Settings:"
+    echo ""
+    echo "Compression:"
+    if [ "$OVPN_COMPRESSION" = "no" ]; then
+        echo "  Status: DISABLED (recommended for CPU-limited routers)"
+    else
+        echo "  Status: ENABLED ($OVPN_COMPRESSION)"
+        echo "  WARNING: Compression uses significant CPU resources"
+    fi
+    echo ""
+    echo "Bandwidth Limiting:"
+    if [ "$OVPN_BANDWIDTH_LIMIT" -gt 0 ] 2>/dev/null; then
+        OVPN_BW_MBPS=$(awk "BEGIN {printf \"%.2f\", ($OVPN_BANDWIDTH_LIMIT * 8) / 1000000}")
+        echo "  Status: ENABLED"
+        echo "  Limit: $OVPN_BANDWIDTH_LIMIT bytes/sec (~${OVPN_BW_MBPS} Mbps)"
+    else
+        echo "  Status: DISABLED (unlimited)"
+    fi
+    echo ""
+    echo "Options:"
+    echo "  1) Configure compression"
+    echo "  2) Configure bandwidth limiting"
+    echo "  3) Cancel"
+    echo ""
+    read -p "Select option (1-3): " perf_option
+
+    case $perf_option in
+        1)
+            echo ""
+            echo "=== Compression Configuration ==="
+            echo ""
+            echo "Current setting: $OVPN_COMPRESSION"
+            echo ""
+            echo "Available options:"
+            echo "  no     - Disabled (recommended for CPU-limited routers)"
+            echo "  lz4    - Fast compression (moderate CPU usage)"
+            echo "  lz4-v2 - LZ4 v2 compression (moderate CPU usage)"
+            echo "  lzo    - Legacy compression (higher CPU usage)"
+            echo ""
+            echo "NOTE: Compression can significantly impact router CPU performance."
+            echo "For most OpenWrt routers, disabled compression is recommended."
+            echo ""
+            read -p "Enter compression setting (no/lz4/lz4-v2/lzo): " new_compression
+
+            if [ "$new_compression" = "no" ] || [ "$new_compression" = "lz4" ] || [ "$new_compression" = "lz4-v2" ] || [ "$new_compression" = "lzo" ]; then
+                OVPN_COMPRESSION="$new_compression"
+                echo ""
+                echo "Compression changed to: $OVPN_COMPRESSION"
+                echo "Note: Regenerate server.conf (option 1) to apply changes"
+            else
+                echo "Invalid option. No changes made."
+            fi
+            ;;
+        2)
+            echo ""
+            echo "=== Bandwidth Limiting Configuration ==="
+            echo ""
+            if [ "$OVPN_BANDWIDTH_LIMIT" -gt 0 ] 2>/dev/null; then
+                OVPN_BW_MBPS=$(awk "BEGIN {printf \"%.2f\", ($OVPN_BANDWIDTH_LIMIT * 8) / 1000000}")
+                echo "Current limit: $OVPN_BANDWIDTH_LIMIT bytes/sec (~${OVPN_BW_MBPS} Mbps)"
+            else
+                echo "Current limit: DISABLED (unlimited)"
+            fi
+            echo ""
+            echo "Enter bandwidth limit in bytes per second:"
+            echo "  Examples:"
+            echo "    125000    = ~1 Mbps"
+            echo "    1000000   = ~8 Mbps"
+            echo "    5000000   = ~40 Mbps"
+            echo "    10000000  = ~80 Mbps"
+            echo "    0         = Unlimited (disable limiting)"
+            echo ""
+            read -p "Enter bandwidth limit (bytes/sec): " new_limit
+
+            if [ -n "$new_limit" ] && [ "$new_limit" -ge 0 ] 2>/dev/null; then
+                OVPN_BANDWIDTH_LIMIT="$new_limit"
+                echo ""
+                if [ "$OVPN_BANDWIDTH_LIMIT" -gt 0 ]; then
+                    OVPN_BW_MBPS=$(awk "BEGIN {printf \"%.2f\", ($OVPN_BANDWIDTH_LIMIT * 8) / 1000000}")
+                    echo "Bandwidth limit set to: $OVPN_BANDWIDTH_LIMIT bytes/sec (~${OVPN_BW_MBPS} Mbps)"
+                else
+                    echo "Bandwidth limiting disabled (unlimited)"
+                fi
+                echo "Note: Regenerate server.conf (option 1) to apply changes"
+            else
+                echo "Invalid number. No changes made."
+            fi
+            ;;
+        *)
+            echo "Cancelled"
+            ;;
+    esac
+
+    echo ""
+}
+
 key_management_first_time() {
 
     # Configuration parameters
@@ -1962,6 +2113,7 @@ while true; do
     echo "  1) Generate/Update server.conf"
     echo "  2) Restore server.conf from backup"
     echo "  3) Toggle IPv6 support (Currently: $OVPN_IPV6_ENABLE)"
+    echo "  p) Configure performance (compression & bandwidth)"
     echo ""
     echo "Certificate Management:"
     echo "  4) Create new client certificate"
@@ -2010,6 +2162,10 @@ while true; do
             ;;
         3)
             toggle_ipv6
+            read -p "Press Enter to continue..."
+            ;;
+        p|P)
+            configure_performance
             read -p "Press Enter to continue..."
             ;;
         4)

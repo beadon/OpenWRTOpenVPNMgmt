@@ -126,6 +126,76 @@ Enter max clients limit (default 253): 100
 - **Globally routable:** Use a /64 from your ISP's delegation (detected in Step 3)
 - **Private ULA:** Generate at https://unique-local-ipv6.com/
 
+### Step 4.5: Configure Performance Settings (Optional but Recommended)
+
+**Menu Option: p**
+
+```
+p) Configure performance (compression & bandwidth)
+
+Current Performance Settings:
+
+Compression:
+  Status: DISABLED (recommended for CPU-limited routers)
+
+Bandwidth Limiting:
+  Status: DISABLED (unlimited)
+
+Options:
+  1) Configure compression
+  2) Configure bandwidth limiting
+  3) Cancel
+```
+
+#### Compression Settings
+
+**Default: Disabled (recommended)**
+
+Compression is disabled by default because OpenWrt routers typically have limited CPU resources. Enabling compression can significantly impact router performance, especially under high VPN load.
+
+**Available options:**
+- `no` - Disabled (recommended for CPU-limited routers)
+- `lz4` - Fast compression (moderate CPU usage)
+- `lz4-v2` - LZ4 v2 compression (moderate CPU usage)
+- `lzo` - Legacy compression (higher CPU usage)
+
+**When to enable compression:**
+- Your router has a powerful CPU (multi-core, 1GHz+)
+- VPN traffic consists mostly of compressible data (text, logs, etc.)
+- Network bandwidth is more limited than CPU capacity
+
+**When to keep compression disabled:**
+- Router has limited CPU (typical for most OpenWrt devices)
+- VPN traffic consists of already-compressed data (video, images, encrypted backups)
+- You prioritize router stability and responsiveness
+
+#### Bandwidth Limiting
+
+**Default: Disabled (unlimited)**
+
+Bandwidth limiting controls the maximum throughput per VPN connection using OpenVPN's built-in `shaper` directive.
+
+**Configuration:**
+```
+Enter bandwidth limit in bytes per second:
+  Examples:
+    125000    = ~1 Mbps
+    1000000   = ~8 Mbps
+    5000000   = ~40 Mbps
+    10000000  = ~80 Mbps
+    0         = Unlimited (disable limiting)
+```
+
+**Common use cases:**
+- **QoS Control:** Prevent VPN from saturating your internet connection
+- **Fair Usage:** Limit individual client bandwidth in multi-user scenarios
+- **ISP Compliance:** Stay within bandwidth caps or fair-use policies
+- **Stability:** Reduce load on CPU-limited routers
+
+**Note:** The `shaper` directive applies to outgoing traffic from the server. For more advanced per-client bandwidth control, consider using Traffic Control (tc) scripts.
+
+**Performance Tip:** For most OpenWrt routers, use disabled compression with bandwidth limiting to balance performance and resource usage.
+
 ### Step 5: Generate Server Configuration
 
 **Menu Option: 1**
