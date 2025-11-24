@@ -659,6 +659,21 @@ configure_vpn_firewall() {
     echo ""
     echo "Configuring firewall..."
 
+    # Create UCI network interface for VPN (makes it visible in LuCI)
+    echo "  Creating VPN network interface in UCI..."
+
+    # Check if vpn interface already exists
+    if ! uci get network.vpn >/dev/null 2>&1; then
+        uci set network.vpn=interface
+        uci set network.vpn.proto='none'
+        uci set network.vpn.device='tun+'
+        uci set network.vpn.auto='1'
+        uci commit network
+        echo "    Created 'vpn' network interface (will show in LuCI Network → Interfaces)"
+    else
+        echo "    VPN network interface already exists"
+    fi
+
     # Rename zones for easier reference (if not already named)
     uci rename firewall.@zone[0]="lan" 2>/dev/null
     uci rename firewall.@zone[1]="wan" 2>/dev/null
@@ -681,23 +696,56 @@ configure_vpn_firewall() {
 
     echo "  Created OpenVPN WAN access rule (IPv4 & IPv6)"
 
-    # Enable IPv6 forwarding if IPv6 is enabled
+    # Configure IPv6 firewall rules if IPv6 is enabled
     if [ "$OVPN_IPV6_ENABLE" = "yes" ]; then
-        # Check if IPv6 forwarding is enabled
+        echo "  Configuring IPv6 firewall rules..."
+
+        # Enable IPv6 forwarding at kernel level
         ipv6_forward=$(sysctl -n net.ipv6.conf.all.forwarding 2>/dev/null || echo "0")
         if [ "$ipv6_forward" != "1" ]; then
-            echo "  Enabling IPv6 forwarding..."
+            echo "    Enabling IPv6 forwarding..."
             sysctl -w net.ipv6.conf.all.forwarding=1 >/dev/null 2>&1
 
             # Make it persistent
             if ! grep -q "net.ipv6.conf.all.forwarding" /etc/sysctl.conf 2>/dev/null; then
                 echo "net.ipv6.conf.all.forwarding=1" >> /etc/sysctl.conf
-                echo "  IPv6 forwarding enabled (persistent)"
+                echo "    IPv6 forwarding enabled (persistent)"
             fi
         else
-            echo "  IPv6 forwarding already enabled"
+            echo "    IPv6 forwarding already enabled"
         fi
 
+        # Enable IPv6 on LAN zone
+        lan_ipv6=$(uci get firewall.lan.ipv6 2>/dev/null)
+        if [ "$lan_ipv6" != "1" ]; then
+            uci set firewall.lan.ipv6='1'
+            echo "    Enabled IPv6 on LAN zone"
+        fi
+
+        # Enable IPv6 on WAN zone
+        wan_ipv6=$(uci get firewall.wan.ipv6 2>/dev/null)
+        if [ "$wan_ipv6" != "1" ]; then
+            uci set firewall.wan.ipv6='1'
+            echo "    Enabled IPv6 on WAN zone"
+        fi
+
+        # Ensure LAN zone allows IPv6 forwarding
+        lan_forward=$(uci get firewall.lan.forward 2>/dev/null)
+        if [ "$lan_forward" != "ACCEPT" ]; then
+            uci set firewall.lan.forward='ACCEPT'
+            echo "    Enabled IPv6 forwarding on LAN zone"
+        fi
+
+        # Create specific IPv6 forwarding rule from VPN to WAN
+        uci -q delete firewall.vpn_ipv6_forward
+        uci set firewall.vpn_ipv6_forward="forwarding"
+        uci set firewall.vpn_ipv6_forward.src="lan"
+        uci set firewall.vpn_ipv6_forward.dest="wan"
+        uci set firewall.vpn_ipv6_forward.family="ipv6"
+
+        echo "    Created IPv6 forwarding rule (VPN → WAN)"
+
+        echo "  IPv6 firewall configuration complete"
     fi
 
     # Commit changes
@@ -707,17 +755,32 @@ configure_vpn_firewall() {
     echo "Firewall configuration updated"
     echo ""
 
+    # Restart network to register VPN interface
+    echo "To make VPN interface visible in LuCI, network service needs restart."
+    read -p "Restart network service? (y/n): " restart_net
+    if [ "$restart_net" = "y" ] || [ "$restart_net" = "Y" ]; then
+        /etc/init.d/network restart
+        echo "Network service restarted"
+        sleep 2
+    fi
+
+    echo ""
     read -p "Restart firewall to apply changes? (y/n): " restart
     if [ "$restart" = "y" ] || [ "$restart" = "Y" ]; then
-        service firewall restart
+        /etc/init.d/firewall restart
         echo "Firewall restarted"
         echo ""
         echo "VPN clients will now have full LAN access"
         if [ "$OVPN_IPV6_ENABLE" = "yes" ]; then
             echo "IPv6 routing enabled for VPN clients"
         fi
+        echo ""
+        echo "VPN interface will appear in LuCI Network → Interfaces as 'vpn'"
+        echo "Note: It will show as 'down' until OpenVPN is running"
     else
-        echo "Remember to restart firewall: service firewall restart"
+        echo "Remember to restart services:"
+        echo "  Network: /etc/init.d/network restart"
+        echo "  Firewall: /etc/init.d/firewall restart"
     fi
 
     echo ""
@@ -868,13 +931,13 @@ check_firewall() {
     # Check 1: VPN interface in LAN zone
     echo "1. Checking VPN interface configuration..."
     echo ""
-    
+
     vpn_in_lan=0
     lan_devices=$(uci get firewall.@zone[0].device 2>/dev/null)
-    
+
     # Check if tun+ is in the device list
     echo "$lan_devices" | grep -q "tun+" && vpn_in_lan=1
-    
+
     if [ $vpn_in_lan -eq 1 ]; then
         echo "   [OK] VPN interface (tun+) is in LAN zone"
         echo "        VPN clients have full LAN access"
@@ -882,9 +945,19 @@ check_firewall() {
         echo "   [MISSING] VPN interface (tun+) is NOT in LAN zone"
         echo "        VPN clients may have limited access"
         echo ""
-        echo "   To add VPN interface to LAN zone, use option 14"
+        echo "   To add VPN interface to LAN zone, use option 15"
     fi
-    
+
+    # Check if UCI network interface exists for LuCI visibility
+    if uci get network.vpn >/dev/null 2>&1; then
+        echo "   [OK] VPN network interface exists in UCI"
+        echo "        Will appear in LuCI Network → Interfaces as 'vpn'"
+    else
+        echo "   [INFO] VPN network interface not in UCI"
+        echo "        Won't appear in LuCI interface list"
+        echo "        Run option 15 to create it"
+    fi
+
     echo ""
     
     # Check 2: OpenVPN port open from WAN
@@ -936,16 +1009,85 @@ check_firewall() {
     fi
     
     echo ""
+
+    # Check 3: IPv6 firewall configuration (if IPv6 is enabled)
+    if [ "$OVPN_IPV6_ENABLE" = "yes" ]; then
+        echo "3. Checking IPv6 firewall configuration..."
+        echo ""
+
+        ipv6_issues=0
+
+        # Check IPv6 forwarding at kernel level
+        ipv6_forward=$(sysctl -n net.ipv6.conf.all.forwarding 2>/dev/null || echo "0")
+        if [ "$ipv6_forward" = "1" ]; then
+            echo "   [OK] IPv6 forwarding enabled at kernel level"
+        else
+            echo "   [MISSING] IPv6 forwarding DISABLED at kernel level"
+            echo "        Run: sysctl -w net.ipv6.conf.all.forwarding=1"
+            ipv6_issues=$((ipv6_issues + 1))
+        fi
+
+        # Check LAN zone IPv6
+        lan_ipv6=$(uci get firewall.lan.ipv6 2>/dev/null)
+        if [ "$lan_ipv6" = "1" ]; then
+            echo "   [OK] IPv6 enabled on LAN zone"
+        else
+            echo "   [MISSING] IPv6 NOT enabled on LAN zone"
+            ipv6_issues=$((ipv6_issues + 1))
+        fi
+
+        # Check WAN zone IPv6
+        wan_ipv6=$(uci get firewall.wan.ipv6 2>/dev/null)
+        if [ "$wan_ipv6" = "1" ]; then
+            echo "   [OK] IPv6 enabled on WAN zone"
+        else
+            echo "   [MISSING] IPv6 NOT enabled on WAN zone"
+            ipv6_issues=$((ipv6_issues + 1))
+        fi
+
+        # Check LAN zone forwarding
+        lan_forward=$(uci get firewall.lan.forward 2>/dev/null)
+        if [ "$lan_forward" = "ACCEPT" ]; then
+            echo "   [OK] LAN zone allows forwarding"
+        else
+            echo "   [WARN] LAN zone forwarding: $lan_forward (should be ACCEPT)"
+        fi
+
+        # Check IPv6 forwarding rule
+        if uci get firewall.vpn_ipv6_forward >/dev/null 2>&1; then
+            echo "   [OK] IPv6 forwarding rule exists (VPN → WAN)"
+        else
+            echo "   [MISSING] IPv6 forwarding rule NOT configured"
+            ipv6_issues=$((ipv6_issues + 1))
+        fi
+
+        if [ $ipv6_issues -gt 0 ]; then
+            echo ""
+            echo "   To fix IPv6 firewall issues, use option 15"
+        fi
+
+        echo ""
+    fi
+
     echo "=== Summary ==="
     echo ""
-    
+
     if [ $vpn_in_lan -eq 1 ] && [ $port_open -eq 1 ]; then
-        echo "  Firewall is properly configured for OpenVPN"
+        if [ "$OVPN_IPV6_ENABLE" = "yes" ] && [ $ipv6_issues -gt 0 ]; then
+            echo "  IPv4 firewall is properly configured"
+            echo "  IPv6 firewall has $ipv6_issues issue(s)"
+            echo "  Use option 15 to configure IPv6 firewall"
+        else
+            echo "  Firewall is properly configured for OpenVPN"
+            if [ "$OVPN_IPV6_ENABLE" = "yes" ]; then
+                echo "  IPv6 firewall rules are correct"
+            fi
+        fi
     else
         echo "  Firewall configuration incomplete"
-        echo "  Use option 14 to automatically configure firewall"
+        echo "  Use option 15 to automatically configure firewall"
     fi
-    
+
     echo ""
 }
 

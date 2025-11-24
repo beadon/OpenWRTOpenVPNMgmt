@@ -230,10 +230,33 @@ Continue with firewall configuration? (yes/no): yes
 Restart firewall to apply changes? (y/n): y
 ```
 
-This will:
-- Add VPN interface (tun+) to LAN zone (gives VPN clients LAN access)
-- Allow OpenVPN port on WAN (IPv4 & IPv6)
-- Enable IPv6 forwarding (if IPv6 is enabled)
+**This automatically configures:**
+
+**UCI Network Interface (for LuCI visibility):**
+- Creates `network.vpn` interface in UCI
+- Configured with `proto='none'` and `device='tun+'`
+- Makes VPN tunnel visible in **LuCI → Network → Interfaces**
+- Will appear as interface named "vpn"
+- Shows status (up/down) based on OpenVPN running state
+
+**IPv4 Rules:**
+- Adds VPN interface (tun+) to LAN zone (gives VPN clients LAN access)
+- Allows OpenVPN port on WAN for incoming connections
+- Creates firewall rule: Allow-OpenVPN (family=any for IPv4 & IPv6)
+
+**IPv6 Rules (when IPv6 is enabled):**
+- Enables IPv6 forwarding at kernel level (`sysctl`)
+- Makes IPv6 forwarding persistent across reboots
+- Enables IPv6 on LAN firewall zone (`ipv6=1`)
+- Enables IPv6 on WAN firewall zone (`ipv6=1`)
+- Sets LAN zone forwarding to ACCEPT
+- Creates IPv6-specific forwarding rule (VPN → WAN)
+
+**What this means:**
+- VPN clients can connect over IPv4 or IPv6
+- VPN clients can access internet over IPv4 and IPv6
+- VPN clients can access LAN resources
+- All traffic is properly routed through firewall
 
 **Verify Firewall:**
 
@@ -241,9 +264,12 @@ This will:
 14) Check firewall configuration
 ```
 
-Confirms :
+**Confirms:**
 - VPN interface in LAN zone
 - OpenVPN port open on WAN
+- IPv6 forwarding enabled (if IPv6 is enabled)
+- IPv6 zones properly configured
+- IPv6 forwarding rules exist
 
 ### Step 7: Restart OpenVPN
 
@@ -363,6 +389,38 @@ One the client device (the laptop or mobile device) open a browser while the VPN
   - Install luci-app-openvpn with one command
   - Automatic opkg update and package installation
   - Changes made in LuCI web interface appear in this script and vice versa
+
+### Viewing VPN Tunnel in LuCI
+
+After running **Menu Option 15** (Configure VPN firewall access), the VPN tunnel interface will appear in LuCI:
+
+**Location:** LuCI → Network → Interfaces
+
+**Interface name:** `vpn` (represents OpenVPN tunnel `tun+`)
+
+**When OpenVPN is running:**
+- Status: Connected (green)
+- Shows tunnel IP addresses (IPv4 and IPv6 if enabled)
+- Displays traffic statistics
+- Real-time monitoring
+
+**When OpenVPN is stopped:**
+- Status: Disconnected (red)
+- Interface exists but inactive
+
+**What you can do in LuCI:**
+- View interface details and statistics
+- Monitor real-time traffic
+- See tunnel configuration
+- Check connectivity status
+
+**Important:** The `vpn` interface is managed by OpenVPN. Don't edit it directly in LuCI - use this script (Menu Options) or edit `/etc/openvpn/server.conf` instead.
+
+**Troubleshooting:** If VPN interface doesn't appear in LuCI:
+1. Run Menu Option 15 to create UCI network interface
+2. Restart network service: `/etc/init.d/network restart`
+3. Refresh LuCI page
+4. Check Menu Option 14 for verification
 
 
 ## OpenVPN Monitoring
