@@ -2858,7 +2858,11 @@ check_fix_permissions() {
         echo ""
         echo "Issues found:"
         local counter=1
-        while IFS='|' read -r filepath current expected description; do
+        while read -r line; do
+            filepath=$(echo "$line" | cut -d'|' -f1)
+            current=$(echo "$line" | cut -d'|' -f2)
+            expected=$(echo "$line" | cut -d'|' -f3)
+            description=$(echo "$line" | cut -d'|' -f4)
             echo "  $counter. $filepath"
             echo "     Current: $current | Expected: $expected"
             echo "     Type: $description"
@@ -2876,7 +2880,9 @@ check_fix_permissions() {
         if [ "$fix_all" = "yes" ]; then
             echo ""
             echo "Fixing permissions..."
-            while IFS='|' read -r filepath current expected description; do
+            while read -r line; do
+                filepath=$(echo "$line" | cut -d'|' -f1)
+                expected=$(echo "$line" | cut -d'|' -f3)
                 if chmod "$expected" "$filepath" 2>/dev/null; then
                     echo "  [FIXED] $filepath -> $expected"
                 else
@@ -2894,7 +2900,9 @@ check_fix_permissions() {
             echo "No changes made."
             echo ""
             echo "To fix manually, run these commands:"
-            while IFS='|' read -r filepath current expected description; do
+            while read -r line; do
+                filepath=$(echo "$line" | cut -d'|' -f1)
+                expected=$(echo "$line" | cut -d'|' -f3)
                 echo "  chmod $expected $filepath"
             done < "$temp_issues"
         fi
