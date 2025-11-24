@@ -2266,7 +2266,8 @@ monitor_single_instance() {
         ' > "$temp_clients"
 
         # Count total clients
-        total_clients=$(grep -c "." "$temp_clients" 2>/dev/null || echo "0")
+        total_clients=$(wc -l < "$temp_clients" 2>/dev/null)
+        total_clients=${total_clients:-0}
         echo "Total connected clients: $total_clients"
         echo ""
 
@@ -2801,7 +2802,9 @@ check_active_connections() {
             ' > "$temp_extract"
 
             # Count client entries (non-empty lines in the extracted section)
-            connection_count=$(grep -c "." "$temp_extract" 2>/dev/null || echo "0")
+            # Note: grep -c always outputs a count (even 0), so no fallback needed
+            connection_count=$(wc -l < "$temp_extract" 2>/dev/null)
+            connection_count=${connection_count:-0}
 
             # Clean up temp file
             rm -f "$temp_extract"
