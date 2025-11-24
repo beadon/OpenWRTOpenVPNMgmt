@@ -2209,66 +2209,105 @@ monitor_single_instance() {
         echo ""
     done
 
-    # Check OpenVPN status log if available
-    if [ -f "$status_file" ]; then
-        echo "=================================================="
-        echo "OpenVPN Client Status (from status log)"
-        echo "=================================================="
-        echo ""
+    # Check OpenVPN log for client status
+    local log_file=$(get_log_file_path "$instance")
 
-        # Force OpenVPN to update status file by sending SIGUSR2
+    if [ -f "$log_file" ]; then
         # Find PID for this specific instance
         openvpn_pid=$(pgrep -f "[o]penvpn.*${instance}" | head -1)
         if [ -n "$openvpn_pid" ]; then
-            echo "Updating status file for instance '$instance' (sending SIGUSR2 to PID $openvpn_pid)..."
+            echo "Requesting status update for instance '$instance' (sending SIGUSR2 to PID $openvpn_pid)..."
             kill -USR2 $openvpn_pid 2>/dev/null
 
-            # Wait briefly for status file to be written
+            # Wait briefly for log file to be written
             sleep 1
             echo ""
         else
             echo "Warning: Could not find OpenVPN process for instance '$instance'"
-            echo "Status file may be outdated or instance not running"
+            echo "Status information may be outdated or instance not running"
             echo ""
         fi
 
+        echo "=================================================="
+        echo "OpenVPN Client Status (from log file)"
+        echo "=================================================="
+        echo ""
+
+        # Extract ONLY the LAST CLIENT LIST section from log file (the one we just triggered)
+        local temp_clients="/tmp/openvpn_monitor_$$"
+        tail -300 "$log_file" 2>/dev/null | awk '
+            /OpenVPN CLIENT LIST/ {
+                # Start of a new client list - reset everything to capture only the last one
+                delete clients
+                client_count = 0
+                in_list = 1
+                found_header = 0
+                next
+            }
+            in_list && /Common Name,Real Address/ {
+                found_header = 1
+                next
+            }
+            in_list && found_header && /ROUTING TABLE/ {
+                # End of this client list section
+                in_list = 0
+                next
+            }
+            in_list && found_header && NF > 0 {
+                # Store this client line
+                clients[client_count++] = $0
+            }
+            END {
+                # Output only the last captured client list
+                for (i = 0; i < client_count; i++) {
+                    print clients[i]
+                }
+            }
+        ' > "$temp_clients"
+
         # Count total clients
-        total_clients=$(grep "^CLIENT_LIST" "$status_file" 2>/dev/null | grep -v "HEADER" | wc -l)
+        total_clients=$(grep -c "." "$temp_clients" 2>/dev/null || echo "0")
         echo "Total connected clients: $total_clients"
         echo ""
 
-        grep "^CLIENT_LIST" "$status_file" 2>/dev/null | while read line; do
-            # Parse: CLIENT_LIST,name,real_addr,virtual_addr,virtual_ipv6_addr,bytes_recv,bytes_sent,connected_since,connected_since_epoch,username
-            client_name=$(echo "$line" | cut -d',' -f2)
-            real_addr=$(echo "$line" | cut -d',' -f3)
-            virtual_ipv4=$(echo "$line" | cut -d',' -f4)
-            virtual_ipv6=$(echo "$line" | cut -d',' -f5)
-            bytes_recv=$(echo "$line" | cut -d',' -f6)
-            bytes_sent=$(echo "$line" | cut -d',' -f7)
-            connected_since=$(echo "$line" | cut -d',' -f8)
+        if [ "$total_clients" -gt 0 ]; then
+            # Parse each client line
+            # Format: timestamp Common Name,Real Address,Bytes Received,Bytes Sent,Connected Since
+            while read line; do
+                # Remove timestamp prefix (everything before the actual data)
+                # The data starts after the timestamp pattern
+                client_data=$(echo "$line" | sed 's/^[0-9-]* [0-9:]* //')
 
-            if [ -n "$client_name" ] && [ "$client_name" != "HEADER" ]; then
-                echo "  Client: $client_name"
-                echo "    Real address: $real_addr"
-                echo "    Virtual IPv4: $virtual_ipv4"
-                if [ -n "$virtual_ipv6" ] && [ "$virtual_ipv6" != "" ]; then
-                    echo "    Virtual IPv6: $virtual_ipv6"
+                client_name=$(echo "$client_data" | cut -d',' -f1)
+                real_addr=$(echo "$client_data" | cut -d',' -f2)
+                bytes_recv=$(echo "$client_data" | cut -d',' -f3)
+                bytes_sent=$(echo "$client_data" | cut -d',' -f4)
+                connected_since=$(echo "$client_data" | cut -d',' -f5-)
+
+                if [ -n "$client_name" ]; then
+                    echo "  Client: $client_name"
+                    echo "    Real address: $real_addr"
+
+                    # Convert bytes to human readable
+                    if [ -n "$bytes_recv" ] && [ "$bytes_recv" -gt 0 ] 2>/dev/null; then
+                        bytes_recv_mb=$((bytes_recv / 1024 / 1024))
+                        bytes_sent_mb=$((bytes_sent / 1024 / 1024))
+                        echo "    Data: ↓ ${bytes_recv_mb} MB / ↑ ${bytes_sent_mb} MB"
+                    fi
+
+                    if [ -n "$connected_since" ]; then
+                        echo "    Connected since: $connected_since"
+                    fi
+                    echo ""
                 fi
+            done < "$temp_clients"
+        fi
 
-                # Convert bytes to human readable
-                if [ -n "$bytes_recv" ] && [ "$bytes_recv" -gt 0 ] 2>/dev/null; then
-                    bytes_recv_mb=$((bytes_recv / 1024 / 1024))
-                    bytes_sent_mb=$((bytes_sent / 1024 / 1024))
-                    echo "    Data: ↓ ${bytes_recv_mb} MB / ↑ ${bytes_sent_mb} MB"
-                fi
-
-                echo "    Connected since: $connected_since"
-                echo ""
-            fi
-        done
+        # Clean up temp file
+        rm -f "$temp_clients"
     else
         echo "=================================================="
-        echo "Note: OpenVPN status log not found at $status_file"
+        echo "Note: OpenVPN log file not found at $log_file"
         echo "      Detailed client information not available"
         echo "=================================================="
     fi
@@ -2681,32 +2720,93 @@ get_status_file_path() {
     echo "$status_path"
 }
 
+# Helper function to get the log file path from server config
+get_log_file_path() {
+    local instance="${1:-$OVPN_INSTANCE}"
+    local config_file="/etc/openvpn/${instance}.conf"
+    local log_path
+
+    # Try to read log-append or log directive from config file
+    if [ -f "$config_file" ]; then
+        log_path=$(grep "^log-append " "$config_file" 2>/dev/null | awk '{print $2}')
+        if [ -z "$log_path" ]; then
+            log_path=$(grep "^log " "$config_file" 2>/dev/null | awk '{print $2}')
+        fi
+    fi
+
+    # If not found or empty, use default
+    if [ -z "$log_path" ]; then
+        log_path="/var/log/openvpn.log"
+    fi
+
+    echo "$log_path"
+}
+
 # Helper function to check for active VPN connections
 check_active_connections() {
     local instance="${1:-$OVPN_INSTANCE}"
     local connection_count=0
-    local status_file
+    local log_file
     local openvpn_pid
+    local temp_extract
 
-    # Get the status file path for this instance
-    status_file=$(get_status_file_path "$instance")
+    # Get the log file path for this instance
+    log_file=$(get_log_file_path "$instance")
 
     # First check if OpenVPN process is running
     openvpn_pid=$(pgrep -f "[o]penvpn.*${instance}" | head -1)
 
     if [ -n "$openvpn_pid" ]; then
-        # Process is running - force update of status file by sending SIGUSR2
+        # Process is running - send SIGUSR2 to trigger status dump to log
         kill -USR2 "$openvpn_pid" 2>/dev/null
 
-        # Wait for status file to be updated (OpenVPN writes it immediately upon receiving SIGUSR2)
+        # Wait for log file to be updated (OpenVPN writes it immediately upon receiving SIGUSR2)
         sleep 1
 
-        # Now read the freshly updated status file
-        if [ -f "$status_file" ]; then
-            # Count CLIENT_LIST entries (excluding HEADER line)
-            connection_count=$(grep "^CLIENT_LIST" "$status_file" 2>/dev/null | grep -v "HEADER" | wc -l)
+        # Now parse the log file for CLIENT LIST section
+        if [ -f "$log_file" ]; then
+            # Create temp file to extract the CLIENT LIST section
+            temp_extract="/tmp/openvpn_client_check_$$"
+
+            # Get last 300 lines to ensure we capture the full CLIENT LIST block
+            # Extract ONLY the LAST "OpenVPN CLIENT LIST" section (the one we just triggered)
+            tail -300 "$log_file" 2>/dev/null | awk '
+                /OpenVPN CLIENT LIST/ {
+                    # Start of a new client list - reset everything to capture only the last one
+                    delete clients
+                    client_count = 0
+                    in_list = 1
+                    found_header = 0
+                    next
+                }
+                in_list && /Common Name,Real Address/ {
+                    found_header = 1
+                    next
+                }
+                in_list && found_header && /ROUTING TABLE/ {
+                    # End of this client list section
+                    in_list = 0
+                    next
+                }
+                in_list && found_header && NF > 0 {
+                    # Store this client line
+                    clients[client_count++] = $0
+                }
+                END {
+                    # Output only the last captured client list
+                    for (i = 0; i < client_count; i++) {
+                        print clients[i]
+                    }
+                }
+            ' > "$temp_extract"
+
+            # Count client entries (non-empty lines in the extracted section)
+            connection_count=$(grep -c "." "$temp_extract" 2>/dev/null || echo "0")
+
+            # Clean up temp file
+            rm -f "$temp_extract"
         else
-            # Status file doesn't exist even though process is running - fallback method
+            # Log file doesn't exist - fallback to network interface method
             for tun_if in $(ip link show | grep -o "tun[0-9]*" | sort -u); do
                 local neighbors=$(ip neigh show dev "$tun_if" 2>/dev/null | grep -v "FAILED" | wc -l)
                 connection_count=$((connection_count + neighbors))
