@@ -120,7 +120,7 @@ list_openvpn_instances() {
         fi
 
         # Check if running
-        if pgrep -f "[o]penvpn.*${instance_name}" >/dev/null 2>&1; then
+        if pgrep -f "[/]openvpn .*${instance_name}" >/dev/null 2>&1; then
             running_status="RUNNING"
         else
             running_status="stopped"
@@ -2000,7 +2000,7 @@ monitor_vpn_usage() {
             instance_count=$((instance_count + 1))
 
             # Check if running
-            if pgrep -f "[o]penvpn.*${inst}" >/dev/null 2>&1; then
+            if pgrep -f "[/]openvpn .*${inst}" >/dev/null 2>&1; then
                 status="RUNNING"
             else
                 status="stopped"
@@ -2214,7 +2214,7 @@ monitor_single_instance() {
 
     if [ -f "$log_file" ]; then
         # Find PID for this specific instance
-        openvpn_pid=$(pgrep -f "[o]penvpn.*${instance}" | head -1)
+        openvpn_pid=$(pgrep -f "[/]openvpn .*${instance}" | head -1)
         if [ -n "$openvpn_pid" ]; then
             echo "Requesting status update for instance '$instance' (sending SIGUSR2 to PID $openvpn_pid)..."
             kill -USR2 $openvpn_pid 2>/dev/null
@@ -2756,7 +2756,7 @@ check_active_connections() {
     log_file=$(get_log_file_path "$instance")
 
     # First check if OpenVPN process is running
-    openvpn_pid=$(pgrep -f "[o]penvpn.*${instance}" | head -1)
+    openvpn_pid=$(pgrep -f "[/]openvpn .*${instance}" | head -1)
 
     if [ -n "$openvpn_pid" ]; then
         # Process is running - send SIGUSR2 to trigger status dump to log
@@ -2895,7 +2895,7 @@ safe_restart_openvpn() {
                 echo "Restarting OpenVPN server immediately..."
                 /etc/init.d/openvpn restart "$instance"
                 sleep 2
-                if pgrep -f "[o]penvpn.*${instance}" >/dev/null 2>&1; then
+                if pgrep -f "[/]openvpn .*${instance}" >/dev/null 2>&1; then
                     echo "Server restarted successfully."
                 else
                     echo "WARNING: Server may have failed to start. Check logs: logread | grep openvpn"
@@ -2962,7 +2962,7 @@ safe_restart_openvpn() {
         echo "Restarting OpenVPN server..."
         /etc/init.d/openvpn restart "$instance"
         sleep 2
-        if pgrep -f "[o]penvpn.*${instance}" >/dev/null 2>&1; then
+        if pgrep -f "[/]openvpn .*${instance}" >/dev/null 2>&1; then
             echo "Server restarted successfully."
         else
             echo "WARNING: Server may have failed to start. Check logs: logread | grep openvpn"
@@ -2986,7 +2986,7 @@ control_openvpn_server() {
     echo ""
 
     # Check current status
-    if pgrep -f "[o]penvpn.*${OVPN_INSTANCE}" >/dev/null 2>&1; then
+    if pgrep -f "[/]openvpn .*${OVPN_INSTANCE}" >/dev/null 2>&1; then
         is_running=1
         echo "Status: RUNNING"
     else
@@ -3021,7 +3021,7 @@ control_openvpn_server() {
                 /etc/init.d/openvpn start $OVPN_INSTANCE
                 echo ""
                 sleep 2
-                if pgrep -f "[o]penvpn.*${OVPN_INSTANCE}" >/dev/null 2>&1; then
+                if pgrep -f "[/]openvpn .*${OVPN_INSTANCE}" >/dev/null 2>&1; then
                     echo "Server started successfully."
                 else
                     echo "WARNING: Server may have failed to start. Check logs with: logread | grep openvpn"
@@ -3042,7 +3042,7 @@ control_openvpn_server() {
                     /etc/init.d/openvpn stop $OVPN_INSTANCE
                     echo ""
                     sleep 2
-                    if ! pgrep -f "[o]penvpn.*${OVPN_INSTANCE}" >/dev/null 2>&1; then
+                    if ! pgrep -f "[/]openvpn .*${OVPN_INSTANCE}" >/dev/null 2>&1; then
                         echo "Server stopped successfully."
                     else
                         echo "WARNING: Server may still be running. Try: killall openvpn"
@@ -3063,9 +3063,9 @@ control_openvpn_server() {
             echo ""
 
             # Check process status
-            if pgrep -f "[o]penvpn.*${OVPN_INSTANCE}" >/dev/null 2>&1; then
+            if pgrep -f "[/]openvpn .*${OVPN_INSTANCE}" >/dev/null 2>&1; then
                 echo "Process Status: RUNNING"
-                echo "PID: $(pgrep -f "[o]penvpn.*${OVPN_INSTANCE}")"
+                echo "PID: $(pgrep -f "[/]openvpn .*${OVPN_INSTANCE}")"
             else
                 echo "Process Status: STOPPED"
             fi
