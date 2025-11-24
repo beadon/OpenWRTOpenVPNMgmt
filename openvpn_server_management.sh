@@ -2266,7 +2266,8 @@ monitor_single_instance() {
         ' > "$temp_clients"
 
         # Count total clients
-        total_clients=$(wc -l < "$temp_clients" 2>/dev/null)
+        total_clients=$(awk 'END {print NR}' "$temp_clients" 2>/dev/null)
+        total_clients=$(echo "$total_clients" | tr -d ' \t\n\r')
         total_clients=${total_clients:-0}
         echo "Total connected clients: $total_clients"
         echo ""
@@ -2802,8 +2803,10 @@ check_active_connections() {
             ' > "$temp_extract"
 
             # Count client entries (non-empty lines in the extracted section)
-            # Note: grep -c always outputs a count (even 0), so no fallback needed
-            connection_count=$(wc -l < "$temp_extract" 2>/dev/null)
+            # Use awk to count lines - more reliable than wc -l in BusyBox
+            connection_count=$(awk 'END {print NR}' "$temp_extract" 2>/dev/null)
+            # Strip any whitespace and ensure it's a number
+            connection_count=$(echo "$connection_count" | tr -d ' \t\n\r')
             connection_count=${connection_count:-0}
 
             # Clean up temp file
@@ -2811,7 +2814,9 @@ check_active_connections() {
         else
             # Log file doesn't exist - fallback to network interface method
             for tun_if in $(ip link show | grep -o "tun[0-9]*" | sort -u); do
-                local neighbors=$(ip neigh show dev "$tun_if" 2>/dev/null | grep -v "FAILED" | wc -l)
+                local neighbors=$(ip neigh show dev "$tun_if" 2>/dev/null | grep -v "FAILED" | awk 'END {print NR}')
+                neighbors=$(echo "$neighbors" | tr -d ' \t\n\r')
+                neighbors=${neighbors:-0}
                 connection_count=$((connection_count + neighbors))
             done
         fi
