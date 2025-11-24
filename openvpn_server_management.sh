@@ -723,6 +723,135 @@ configure_vpn_firewall() {
     echo ""
 }
 
+# Function to diagnose IPv6 routing issues
+diagnose_ipv6_routing() {
+    echo ""
+    echo "=== IPv6 Routing Diagnostic ==="
+    echo ""
+
+    local issues_found=0
+
+    # Check 1: IPv6 forwarding enabled
+    echo "1. Checking IPv6 forwarding..."
+    local ipv6_forward=$(cat /proc/sys/net/ipv6/conf/all/forwarding 2>/dev/null)
+    if [ "$ipv6_forward" = "1" ]; then
+        echo "   [OK] IPv6 forwarding is enabled"
+    else
+        echo "   [FAIL] IPv6 forwarding is DISABLED"
+        echo "   Fix: sysctl -w net.ipv6.conf.all.forwarding=1"
+        issues_found=$((issues_found + 1))
+    fi
+    echo ""
+
+    # Check 2: Router has IPv6 WAN connectivity
+    echo "2. Checking router IPv6 WAN connectivity..."
+    local wan6_addr=$(ip -6 addr show | grep "scope global" | grep -v "fd00:" | grep -v "fe80:" | head -1)
+    if [ -n "$wan6_addr" ]; then
+        echo "   [OK] Router has global IPv6 address"
+        echo "   $wan6_addr"
+    else
+        echo "   [FAIL] Router has NO global IPv6 address"
+        echo "   Your router needs IPv6 connectivity from ISP first"
+        issues_found=$((issues_found + 1))
+    fi
+    echo ""
+
+    # Check 3: Default IPv6 route exists
+    echo "3. Checking IPv6 default route..."
+    if ip -6 route show default | grep -q "default"; then
+        echo "   [OK] IPv6 default route exists"
+        ip -6 route show default | sed 's/^/   /'
+    else
+        echo "   [FAIL] No IPv6 default route found"
+        echo "   Router cannot route IPv6 traffic to internet"
+        issues_found=$((issues_found + 1))
+    fi
+    echo ""
+
+    # Check 4: VPN tunnel has IPv6 address
+    echo "4. Checking VPN tunnel IPv6 configuration..."
+    if ip -6 addr show dev tun0 2>/dev/null | grep -q "inet6"; then
+        echo "   [OK] VPN tunnel has IPv6 address"
+        ip -6 addr show dev tun0 | grep "inet6" | sed 's/^/   /'
+    else
+        echo "   [FAIL] VPN tunnel (tun0) has no IPv6 address"
+        echo "   Check: Is IPv6 enabled in server.conf?"
+        echo "   Check: Is OpenVPN running?"
+        issues_found=$((issues_found + 1))
+    fi
+    echo ""
+
+    # Check 5: IPv6 route for VPN subnet
+    echo "5. Checking IPv6 routes for VPN subnet..."
+    if [ "$OVPN_IPV6_ENABLE" = "yes" ]; then
+        local vpn_prefix=$(echo "$OVPN_IPV6_POOL" | cut -d'/' -f1 | sed 's/::[0-9a-f:]*$//')
+        if ip -6 route show | grep -q "$vpn_prefix"; then
+            echo "   [OK] Route exists for VPN IPv6 subnet"
+            ip -6 route show | grep "$vpn_prefix" | sed 's/^/   /'
+        else
+            echo "   [WARN] No specific route for VPN subnet $OVPN_IPV6_POOL"
+            echo "   This might be OK if using connected route"
+        fi
+    else
+        echo "   [SKIP] IPv6 is disabled in configuration"
+    fi
+    echo ""
+
+    # Check 6: Firewall IPv6 forwarding
+    echo "6. Checking firewall IPv6 forwarding rules..."
+    if uci show firewall | grep -q "ipv6.*1"; then
+        echo "   [OK] IPv6 firewall rules exist"
+    else
+        echo "   [WARN] No IPv6 firewall rules found"
+        echo "   You may need to enable IPv6 in firewall zones"
+    fi
+    echo ""
+
+    # Check 7: NAT/Masquerading (should NOT be needed for IPv6)
+    echo "7. Checking for IPv6 NAT (should NOT be present)..."
+    if ip6tables -t nat -L -n 2>/dev/null | grep -q "MASQUERADE\|SNAT"; then
+        echo "   [WARN] IPv6 NAT detected - this is unusual"
+        echo "   IPv6 should use direct routing, not NAT"
+        issues_found=$((issues_found + 1))
+    else
+        echo "   [OK] No IPv6 NAT (correct configuration)"
+    fi
+    echo ""
+
+    # Check 8: Test IPv6 connectivity from router
+    echo "8. Testing IPv6 connectivity from router..."
+    if ping6 -c 1 -W 2 2001:4860:4860::8888 >/dev/null 2>&1; then
+        echo "   [OK] Router can ping IPv6 internet (Google DNS)"
+    else
+        echo "   [FAIL] Router cannot ping IPv6 internet"
+        echo "   Check: ISP IPv6 connectivity"
+        echo "   Check: Firewall rules"
+        issues_found=$((issues_found + 1))
+    fi
+    echo ""
+
+    # Summary
+    echo "=========================================="
+    if [ $issues_found -eq 0 ]; then
+        echo "RESULT: No critical issues found"
+        echo ""
+        echo "If clients still can't access IPv6:"
+        echo "  1. Check client-side: Does client have IPv6 address from VPN?"
+        echo "  2. Check client routes: ip -6 route (on client)"
+        echo "  3. Check server logs: logread | grep openvpn"
+        echo "  4. Verify server.conf has correct IPv6 directives"
+    else
+        echo "RESULT: Found $issues_found critical issue(s)"
+        echo ""
+        echo "Fix the issues above, then:"
+        echo "  1. Restart networking: /etc/init.d/network restart"
+        echo "  2. Restart firewall: /etc/init.d/firewall restart"
+        echo "  3. Restart OpenVPN: /etc/init.d/openvpn restart"
+    fi
+    echo "=========================================="
+    echo ""
+}
+
 # Function to check if OpenVPN port is open in firewall and VPN zone configuration
 check_firewall() {
     echo ""
@@ -860,7 +989,35 @@ generate_server_conf() {
         echo "  Bandwidth Limit: DISABLED (unlimited)"
     fi
     echo ""
-    
+
+    # Warning about IPv6 leak if IPv6 is disabled
+    if [ "$OVPN_IPV6_ENABLE" != "yes" ]; then
+        echo "=========================================="
+        echo "WARNING: IPv6 TRAFFIC LEAK RISK"
+        echo "=========================================="
+        echo ""
+        echo "IPv6 is DISABLED on this VPN server."
+        echo ""
+        echo "IMPORTANT: VPN clients with IPv6 connectivity will send IPv6 traffic"
+        echo "OUTSIDE the VPN tunnel through their local connection."
+        echo ""
+        echo "This means:"
+        echo "  - IPv6 traffic will NOT be protected by the VPN"
+        echo "  - Client's real IPv6 address will be exposed"
+        echo "  - Privacy/security may be compromised"
+        echo ""
+        echo "Solutions:"
+        echo "  1. Enable IPv6 on VPN (Menu Option 3) - Recommended if you have IPv6"
+        echo "  2. Disable IPv6 on client devices"
+        echo "  3. Use client-side firewall to block IPv6"
+        echo ""
+        echo "If you don't have IPv6 connectivity or don't need it, you can ignore this."
+        echo "=========================================="
+        echo ""
+        read -p "Press Enter to continue..."
+        echo ""
+    fi
+
     if [ -f "$OVPN_SERVER_CONF" ]; then
         echo "WARNING: Existing server.conf found at $OVPN_SERVER_CONF"
         echo "A backup will be created at $OVPN_SERVER_BACKUP"
@@ -1861,10 +2018,23 @@ toggle_ipv6() {
                 fi
                 ;;
             4)
+                echo ""
+                echo "WARNING: Disabling IPv6 will cause IPv6 traffic to leak outside the VPN tunnel!"
+                echo ""
+                echo "VPN clients with IPv6 connectivity will send IPv6 traffic through their"
+                echo "local connection, NOT through the VPN. This exposes their real IPv6 address."
+                echo ""
                 read -p "Disable IPv6 support? (yes/no): " confirm
                 if [ "$confirm" = "yes" ]; then
                     OVPN_IPV6_ENABLE="no"
+                    echo ""
                     echo "IPv6 support disabled"
+                    echo ""
+                    echo "IMPORTANT: Client IPv6 traffic will NOT go through the VPN!"
+                    echo "Advise your VPN users to either:"
+                    echo "  - Disable IPv6 on their devices, OR"
+                    echo "  - Use firewall rules to block IPv6"
+                    echo ""
                     echo "Note: Regenerate server.conf (option 1) to apply changes"
                 else
                     echo "No changes made"
@@ -1876,6 +2046,10 @@ toggle_ipv6() {
         esac
     else
         echo "IPv6 is currently DISABLED"
+        echo ""
+        echo "WARNING: IPv6 traffic from VPN clients will leak outside the tunnel!"
+        echo "Clients with IPv6 connectivity will send IPv6 traffic through their"
+        echo "local connection, exposing their real IPv6 address."
         echo ""
         echo "Enabling IPv6 will:"
         echo "  1. Add IPv6 subnet to VPN tunnel"
@@ -2162,7 +2336,10 @@ while true; do
     echo "VPN Monitoring:"
     echo " 16) Monitor VPN address usage (IPv4 & IPv6)"
     echo ""
-    echo " 17) Exit"
+    echo "Diagnostics:"
+    echo " 17) Diagnose IPv6 routing issues"
+    echo ""
+    echo " 18) Exit"
     echo ""
     read -p "Select an option: " choice
     
@@ -2247,6 +2424,10 @@ while true; do
             read -p "Press Enter to continue..."
             ;;
         17)
+            diagnose_ipv6_routing
+            read -p "Press Enter to continue..."
+            ;;
+        18)
             echo "Exiting..."
             exit 0
             ;;

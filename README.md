@@ -447,28 +447,144 @@ Shows expiration status for all certificates.
 
 ## Troubleshooting
 
-### IPv6 Not Working
+### IPv6 Not Working - VPN Clients Can't Access Internet via IPv6
 
-1. **Verify IPv6 is enabled:**
+**Problem:** VPN clients receive IPv6 addresses but cannot access the internet over IPv6.
+
+**Use the built-in diagnostic tool first:**
+```bash
+# Run from script Menu Option 17
+17) Diagnose IPv6 routing issues
+```
+
+This will automatically check all common issues below.
+
+**Manual Troubleshooting Steps:**
+
+1. **Verify IPv6 forwarding is enabled on router:**
    ```bash
    cat /proc/sys/net/ipv6/conf/all/forwarding
    # Should output: 1
+
+   # If it outputs 0, enable it:
+   sysctl -w net.ipv6.conf.all.forwarding=1
+
+   # Make permanent:
+   echo "net.ipv6.conf.all.forwarding=1" >> /etc/sysctl.conf
    ```
 
-2. **Check tunnel has IPv6:**
+2. **Check router has IPv6 WAN connectivity:**
+   ```bash
+   # Router must have global IPv6 address
+   ip -6 addr show | grep "scope global"
+
+   # Router must have IPv6 default route
+   ip -6 route show default
+
+   # Test router can ping IPv6 internet
+   ping6 -c 3 2001:4860:4860::8888
+   ```
+
+3. **Check VPN tunnel has IPv6:**
    ```bash
    ip -6 addr show tun0
+   # Should show IPv6 address from your VPN pool
    ```
 
-3. **Test connectivity:**
+4. **Verify server.conf has IPv6 directives:**
    ```bash
-   ping6 google.com
+   grep -i ipv6 /etc/openvpn/server.conf
+   # Should show:
+   # server-ipv6 <your-pool>
+   # ifconfig-ipv6 <server-addr> <client-addr>
+   # push "route-ipv6 2000::/3"
+   # push "dhcp-option DNS6 <dns-addr>"
    ```
 
-4. **Check firewall logs:**
+5. **Check firewall allows IPv6 forwarding:**
    ```bash
-   logread | grep -i ipv6
+   # Firewall must allow forwarding from VPN zone
+   uci show firewall | grep -E "lan.*forward|vpn.*forward"
+
+   # Check ip6tables rules
+   ip6tables -L FORWARD -n -v
    ```
+
+6. **Verify NO IPv6 NAT/masquerading (this breaks IPv6):**
+   ```bash
+   ip6tables -t nat -L -n
+   # Should be empty or minimal - IPv6 should NOT use NAT
+   ```
+
+7. **Check OpenVPN logs:**
+   ```bash
+   logread | grep openvpn | grep -i ipv6
+   cat /var/log/openvpn.log | grep -i ipv6
+   ```
+
+8. **Test from client side:**
+   ```bash
+   # On VPN client, check if you received IPv6 address:
+   ip -6 addr show tun0  # Linux
+   ipconfig  # Windows
+
+   # Check IPv6 route:
+   ip -6 route show  # Linux
+
+   # Test IPv6 connectivity:
+   ping6 2001:4860:4860::8888
+   curl -6 https://ifconfig.co
+   ```
+
+**Common fixes:**
+
+- **IPv6 forwarding disabled:** Enable with `sysctl -w net.ipv6.conf.all.forwarding=1`
+- **No IPv6 WAN connection:** Contact ISP or enable IPv6 on WAN interface
+- **Firewall blocking:** Add VPN interface (tun+) to LAN zone with forwarding enabled
+- **Wrong IPv6 pool:** Must use globally routable addresses or proper ULA
+- **ISP blocking:** Some ISPs block IPv6 from non-standard sources - contact ISP
+
+### IPv6 Traffic Leaking Outside VPN Tunnel
+
+**Problem:** VPN clients' IPv6 traffic is not going through the VPN tunnel.
+
+**Symptoms:**
+- IPv6 leak tests show real IPv6 address
+- DNS leaks over IPv6
+- Some websites show client's real location
+- Privacy/security compromised
+
+**Cause:** IPv6 is disabled on the VPN server, so clients with IPv6 connectivity send IPv6 traffic through their local connection instead of the VPN tunnel.
+
+**Solutions:**
+
+1. **Enable IPv6 on VPN server (Recommended):**
+   ```bash
+   # Use Menu Option 3
+   3) Toggle IPv6 support
+   Enable IPv6 support? (yes/no): yes
+   ```
+   Then regenerate server.conf (Option 1) and restart OpenVPN.
+
+2. **Disable IPv6 on client devices:**
+   - Prevents IPv6 traffic entirely
+   - All traffic will use IPv4 through VPN
+   - See "Solutions to Prevent IPv6 Leaks" in IPv6 Setup section
+
+3. **Client-side firewall rules:**
+   - Block all IPv6 traffic on client
+   - Forces IPv4-only through VPN
+
+**Verification after fix:**
+```bash
+# From client, test for leaks:
+curl -6 https://ifconfig.co
+# Should show VPN IPv6 address (if enabled) or fail (if IPv6 disabled on client)
+
+# Test IPv4:
+curl -4 https://ifconfig.co
+# Should show VPN server's public IP
+```
 
 ### DHCPv6 "No Addresses Available" Error
 
@@ -652,6 +768,41 @@ IPv6 support is disabled by default to avoid configuration conflicts and issues.
 - You specifically need IPv6 connectivity through the VPN
 
 **If you're unsure, skip this section entirely.** The VPN will work perfectly with IPv4 only.
+
+## CRITICAL: IPv6 Traffic Leak Warning
+
+**When IPv6 is DISABLED on the VPN server:**
+
+VPN clients that have IPv6 connectivity will send their IPv6 traffic **OUTSIDE the VPN tunnel** through their local internet connection. This means:
+
+- IPv6 traffic is **NOT protected** by the VPN
+- Client's **real IPv6 address is exposed**
+- **Privacy and security are compromised** for IPv6 connections
+- DNS requests may leak over IPv6
+- Websites can see the client's real location via IPv6
+
+**This is a common VPN leak issue!**
+
+### Solutions to Prevent IPv6 Leaks
+
+You have three options to prevent IPv6 leaks:
+
+**Option 1: Enable IPv6 on VPN (Recommended if you have IPv6)**
+- Use Menu Option 3 to enable IPv6 support
+- Follow the configuration steps in this guide
+- All client traffic (IPv4 and IPv6) will go through the VPN
+
+**Option 2: Disable IPv6 on Client Devices**
+- Windows: Network adapter settings → IPv6 (uncheck)
+- macOS: System Preferences → Network → Advanced → TCP/IP → Configure IPv6: Off
+- Linux: `sudo sysctl -w net.ipv6.conf.all.disable_ipv6=1`
+- Mobile: Varies by device
+
+**Option 3: Block IPv6 on Client Firewall**
+- Use client-side firewall rules to drop all IPv6 traffic
+- Forces all traffic to use IPv4 through the VPN
+
+**If you have no IPv6 connectivity at all, you can ignore this warning.**
 
 ---
 
