@@ -1,4 +1,17 @@
 #!/bin/sh
+################################################################################
+#                   OpenWRT OpenVPN Server Management Script                  #
+#                                                                              #
+#  Version: v2.5                                                               #
+#  Repository: https://github.com/beadon/OpenWRTOpenVPNMgmt                   #
+#                                                                              #
+#  All-in-one OpenVPN server management for OpenWrt                           #
+#  - Certificate management, client configs, server control                   #
+#  - Safe restart with connection awareness and scheduling                    #
+#  - IPv6 support, firewall configuration, monitoring                         #
+################################################################################
+
+SCRIPT_VERSION="v2.5"
 
 ################################################################################
 #                        USER CONFIGURATION SECTION                            #
@@ -3453,7 +3466,7 @@ reset
 while true; do
     echo ""
     echo "=================================================="
-    echo "   OpenWRT OpenVPN Management"
+    echo "   OpenWRT OpenVPN Management - $SCRIPT_VERSION"
     echo "=================================================="
     echo "Currently managing: [$OVPN_INSTANCE]"
     echo ""

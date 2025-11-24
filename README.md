@@ -1,8 +1,21 @@
-# OpenWRT OpenVPN Server Management 
+# OpenWRT OpenVPN Server Management
+
+**Version: v2.5**
+
 Openwrt VPN setup and management script, making management of Open VPN via CLI much simpler.
 
 The All-in-One OpenVPN Management Script
-Tired of managing keys, ovpn files and all different parts piecemeal ? Use this script on the CLI to manage it all.
+Tired of managing keys, ovpn files and all different parts piecemeal? Use this script on the CLI to manage it all.
+
+## What's New in v2.5
+
+- **Server Control Menu** - Centralized start/stop/restart with status checking
+- **Safe Restart** - Automatic detection of active client connections before restart
+- **Scheduled Restarts** - Schedule restarts using 'at' utility (auto-installed)
+- **Connection Awareness** - All restart operations check for active clients
+- **Improved Configuration** - User-editable settings organized at top of file
+- **Permission Management** - Check and fix PKI file permissions
+- **Better Process Detection** - Consolidated PID lookup with accurate matching
 
 
 Assuming you have installed wget...
@@ -522,6 +535,102 @@ Run after:
 - Fresh installation
 - System updates
 - If OpenVPN fails to start with permission errors
+
+### Server Control (Start/Stop/Restart)
+
+**Menu Option: s**
+
+```
+s) Start/Stop/Restart server
+
+=== OpenVPN Server Control ===
+
+Current instance: server
+
+Status: RUNNING
+
+Available actions:
+  1) Start server
+  2) Stop server
+  3) Restart server
+  4) Check detailed status
+  5) Enable on boot
+  6) Disable on boot
+  7) Cancel
+```
+
+Provides centralized server control:
+- **Start/Stop/Restart** - Manage server state
+- **Status Check** - View process status, PID, boot configuration
+- **Boot Configuration** - Enable/disable automatic startup
+- **Safe Restart** - Checks for active client connections before restarting (see below)
+
+### Safe Restart with Connection Awareness
+
+All restart operations now include **automatic connection checking** to prevent unexpected disconnections:
+
+**When restarting the server, the script will:**
+
+1. **Check for active VPN clients** by analyzing OpenVPN logs
+2. **If clients are connected**, display warning and offer three options:
+   ```
+   ========================================
+   WARNING: Active VPN Connections Detected
+   ========================================
+
+   There are currently 2 active client(s) connected.
+
+   Restarting the server will disconnect all clients.
+
+   Options:
+     1) Restart now (disconnect clients immediately)
+     2) Schedule restart for later (using 'at' utility)
+     3) Cancel restart
+   ```
+
+3. **If no clients connected**, restart immediately with verification
+
+**Scheduled Restart Feature:**
+
+When you choose to schedule a restart, you can specify:
+- Relative time: `30 minutes`, `2 hours`, `now + 1 hour`
+- Absolute time: `23:30` (11:30 PM today), `02:00` (2 AM tomorrow)
+
+Example:
+```
+Select option (1-3): 2
+
+Schedule restart for later
+
+Examples:
+  - 'now + 30 minutes' or '30 minutes'
+  - 'now + 2 hours' or '2 hours'
+  - '23:30' (11:30 PM today)
+  - '02:00' (2:00 AM tomorrow if past 2 AM now)
+
+Enter time (or 'c' to cancel): 30 minutes
+
+Restart scheduled successfully for: 30 minutes
+
+To view scheduled jobs: atq
+To cancel a scheduled job: atrm <job_number>
+```
+
+**Automatic 'at' Installation:**
+
+The `at` utility (for scheduling) is automatically installed if not present:
+- Runs `opkg update && opkg install at`
+- Enables and starts the `atd` daemon
+- Provides job management commands (`atq`, `atrm`)
+
+**Where Safe Restart is Applied:**
+
+Safe restart with connection checking is automatically used in:
+- Server Control menu (Menu Option 's', Action 3)
+- After generating server configuration (Menu Option 1)
+- After restoring configuration from backup (Menu Option 2)
+- After creating new client certificates (Menu Option 4)
+- After revoking client certificates (Menu Option 6)
 
 ## Troubleshooting
 
