@@ -189,7 +189,7 @@ Or manually:
 
 ```
 4) Create new client certificate
-Enter client name: laptop
+Enter client name: username.laptop
 Generate .ovpn config file? (y/n): y
 ```
 
@@ -198,7 +198,7 @@ Keys are issued per-user per-device.  It is recommended that you choose the name
 
 Advise your users how to install the keys on their system based on the naming scheme you select.  This installation of the .OVPN files on the client machine is an exercise for you or your user.
 
-Know that by default the OpenVPN server will only allow one connection per client device at a time, this means that if you generate a single client ovpn file and place it on 2 devices, only one of these will be able to be connected at a time.  If the second client connects with the same key the first client will be kicked off.  This may be desirable behavior to keep the number of clients to a minimum, or it could be a hassle since more keys are required to support a per-user-per-device.  Either way, this sscript maks managing this easy.
+Know that by default the OpenVPN server will only allow one connection per client device at a time, this means that if you generate a single client ovpn file and place it on 2 devices, only one of these will be able to be connected at a time.  If the second client connects with the same key the first client will be kicked off.  This may be desirable behavior to keep the number of clients to a minimum, or it could be a hassle since more keys are required to support a per-user-per-device.  Either way, this script makes managing this easy.
 
 **Security**
 This naming scheme can be made more GDPR compliant by using a userID number instead of the user's name.  This way the user's real name is not used in any provisioning systems.  However, for most things this is an unnecessary complexity.
@@ -227,10 +227,9 @@ scp root@192.168.1.1:/root/ovpn_config_out/bill.laptop.ovpn ~/Downloads/
 ```
 
 **Or via LuCI Web Interface:**
-NOTE: ( 11/23/2025) : there are no available file browsers in opkg for luci, if you find one, let me know and we'll update this section.
+NOTE: file browser is installable as ```opkg install luci-app-filemanager```
 
 1. Navigate to System → File Browser (if available)
-2. Or use System → Software → upload/download files
 
 ### Step 10: Connect Your Client
 
@@ -242,7 +241,7 @@ NOTE: ( 11/23/2025) : there are no available file browsers in opkg for luci, if 
 **Android/iOS:**
 NOTE: the re-use of the laptop key here will cause connection problems for the user, issue them a second client key in line with your key issuing naming convention (see above).
 
-1. Install OpenVPN Connect app
+1. Install OpenVPN Connect app (from the Play Store, or App Store)
 2. Import `bill.laptop.ovpn`
 3. Connect
 
@@ -255,6 +254,7 @@ curl -4 ifconfig.co     # Check IPv4 address
 curl -6 ifconfig.co     # Check IPv6 address (if enabled)
 ```
 
+One the client device (the laptop or mobile device) open a browser while the VPN connection is established to check that this reflect's the OpenVPN server's IP [https://www.whatismyip.com/](https://www.whatismyip.com/)
 
 # FEATURES
 
