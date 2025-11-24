@@ -2090,6 +2090,10 @@ monitor_single_instance() {
     local connected_since
     local bytes_recv_mb
     local bytes_sent_mb
+    local status_file
+
+    # Get the status file path for this instance
+    status_file=$(get_status_file_path "$instance")
 
     echo "=================================================="
     echo "Monitoring Instance: $instance"
@@ -2206,7 +2210,7 @@ monitor_single_instance() {
     done
 
     # Check OpenVPN status log if available
-    if [ -f "/var/log/openvpn-status.log" ]; then
+    if [ -f "$status_file" ]; then
         echo "=================================================="
         echo "OpenVPN Client Status (from status log)"
         echo "=================================================="
@@ -2229,11 +2233,11 @@ monitor_single_instance() {
         fi
 
         # Count total clients
-        total_clients=$(grep "^CLIENT_LIST" /var/log/openvpn-status.log 2>/dev/null | grep -v "HEADER" | wc -l)
+        total_clients=$(grep "^CLIENT_LIST" "$status_file" 2>/dev/null | grep -v "HEADER" | wc -l)
         echo "Total connected clients: $total_clients"
         echo ""
 
-        grep "^CLIENT_LIST" /var/log/openvpn-status.log 2>/dev/null | while read line; do
+        grep "^CLIENT_LIST" "$status_file" 2>/dev/null | while read line; do
             # Parse: CLIENT_LIST,name,real_addr,virtual_addr,virtual_ipv6_addr,bytes_recv,bytes_sent,connected_since,connected_since_epoch,username
             client_name=$(echo "$line" | cut -d',' -f2)
             real_addr=$(echo "$line" | cut -d',' -f3)
@@ -2264,7 +2268,7 @@ monitor_single_instance() {
         done
     else
         echo "=================================================="
-        echo "Note: OpenVPN status log not found at /var/log/openvpn-status.log"
+        echo "Note: OpenVPN status log not found at $status_file"
         echo "      Detailed client information not available"
         echo "=================================================="
     fi
@@ -2658,29 +2662,59 @@ install_luci_openvpn() {
     echo ""
 }
 
+# Helper function to get the status file path from server config
+get_status_file_path() {
+    local instance="${1:-$OVPN_INSTANCE}"
+    local config_file="/etc/openvpn/${instance}.conf"
+    local status_path
+
+    # Try to read status directive from config file
+    if [ -f "$config_file" ]; then
+        status_path=$(grep "^status " "$config_file" 2>/dev/null | awk '{print $2}')
+    fi
+
+    # If not found or empty, use default
+    if [ -z "$status_path" ]; then
+        status_path="/var/log/openvpn-status.log"
+    fi
+
+    echo "$status_path"
+}
+
 # Helper function to check for active VPN connections
 check_active_connections() {
     local instance="${1:-$OVPN_INSTANCE}"
     local connection_count=0
-    local status_file="/var/log/openvpn-status.log"
+    local status_file
+    local openvpn_pid
 
-    # Try to get count from status file if it exists
-    if [ -f "$status_file" ]; then
-        # Force update of status file by sending SIGUSR2 to OpenVPN process
-        local openvpn_pid=$(pgrep -f "[o]penvpn.*${instance}" | head -1)
-        if [ -n "$openvpn_pid" ]; then
-            kill -USR2 "$openvpn_pid" 2>/dev/null
-            sleep 1
+    # Get the status file path for this instance
+    status_file=$(get_status_file_path "$instance")
+
+    # First check if OpenVPN process is running
+    openvpn_pid=$(pgrep -f "[o]penvpn.*${instance}" | head -1)
+
+    if [ -n "$openvpn_pid" ]; then
+        # Process is running - force update of status file by sending SIGUSR2
+        kill -USR2 "$openvpn_pid" 2>/dev/null
+
+        # Wait for status file to be updated (OpenVPN writes it immediately upon receiving SIGUSR2)
+        sleep 1
+
+        # Now read the freshly updated status file
+        if [ -f "$status_file" ]; then
+            # Count CLIENT_LIST entries (excluding HEADER line)
+            connection_count=$(grep "^CLIENT_LIST" "$status_file" 2>/dev/null | grep -v "HEADER" | wc -l)
+        else
+            # Status file doesn't exist even though process is running - fallback method
+            for tun_if in $(ip link show | grep -o "tun[0-9]*" | sort -u); do
+                local neighbors=$(ip neigh show dev "$tun_if" 2>/dev/null | grep -v "FAILED" | wc -l)
+                connection_count=$((connection_count + neighbors))
+            done
         fi
-
-        # Count CLIENT_LIST entries (excluding HEADER line)
-        connection_count=$(grep "^CLIENT_LIST" "$status_file" 2>/dev/null | grep -v "HEADER" | wc -l)
     else
-        # Fallback: check for tun interfaces and neighbor entries
-        for tun_if in $(ip link show | grep -o "tun[0-9]*" | sort -u); do
-            local neighbors=$(ip neigh show dev "$tun_if" 2>/dev/null | grep -v "FAILED" | wc -l)
-            connection_count=$((connection_count + neighbors))
-        done
+        # OpenVPN process is not running - no connections possible
+        connection_count=0
     fi
 
     echo "$connection_count"
