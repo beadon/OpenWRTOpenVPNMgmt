@@ -340,6 +340,37 @@ check_dhcpv6_prerequisites() {
     fi
 }
 
+# Function to check if IPv6 subnet conflicts with LAN
+check_ipv6_subnet_conflict() {
+    local vpn_subnet="$1"
+
+    # Get LAN IPv6 prefix
+    local lan_ipv6=$(ip -6 addr show dev br-lan 2>/dev/null | grep "inet6" | grep -v "fe80::" | grep -v "::1" | head -1)
+
+    if [ -z "$lan_ipv6" ]; then
+        # No LAN IPv6, no conflict possible
+        return 0
+    fi
+
+    # Extract LAN prefix (simplified comparison)
+    local lan_prefix=$(echo "$lan_ipv6" | awk '{print $2}' | cut -d'/' -f1 | sed 's/::[0-9a-f]*$//')
+    local vpn_prefix=$(echo "$vpn_subnet" | sed 's/::[0-9a-f]*$//' | sed 's/\/[0-9]*$//')
+
+    # Simple prefix comparison (first 64 bits)
+    if [ "$lan_prefix" = "$vpn_prefix" ]; then
+        echo ""
+        echo "WARNING: VPN subnet conflicts with LAN IPv6 subnet!"
+        echo "  LAN is using: ${lan_prefix}/64"
+        echo "  VPN subnet:   $vpn_subnet"
+        echo ""
+        echo "This will cause routing problems. Use a different /64 subnet for VPN."
+        echo ""
+        return 1
+    fi
+
+    return 0
+}
+
 # Function to detect IPv6 prefix delegation from WAN
 detect_ipv6_prefix() {
     echo "Detecting IPv6 configuration from WAN interface..."
@@ -393,6 +424,34 @@ detect_ipv6_prefix() {
     else
         echo "  No prefix delegation detected in UCI config"
         echo "  IPv6 may be using SLAAC only"
+    fi
+
+    echo ""
+
+    # Check LAN IPv6 configuration
+    echo "Checking LAN IPv6 configuration..."
+    lan_ipv6=$(ip -6 addr show dev br-lan 2>/dev/null | grep "inet6" | grep -v "fe80::" | grep -v "::1" | head -1)
+
+    if [ -n "$lan_ipv6" ]; then
+        echo "  LAN IPv6 addresses found:"
+        echo "    $lan_ipv6"
+
+        # Extract LAN IPv6 prefix
+        lan_prefix=$(echo "$lan_ipv6" | awk '{print $2}' | cut -d'/' -f1 | sed 's/::[0-9a-f]*$/::/')
+        echo "  LAN IPv6 prefix: ${lan_prefix}/64"
+        echo ""
+        echo "  IMPORTANT: Use a DIFFERENT /64 subnet for VPN to avoid conflicts"
+        echo "  Do NOT use ${lan_prefix}/64 for your VPN pool"
+    else
+        echo "  No global IPv6 addresses on LAN interface"
+        echo "  WARNING: IPv6 may not be properly configured on your router"
+        echo ""
+        echo "  Common causes:"
+        echo "    - No IPv6 prefix delegation from ISP"
+        echo "    - DHCPv6 not configured on LAN"
+        echo "    - IPv6 disabled on LAN interface"
+        echo ""
+        echo "  To check DHCPv6 logs: logread | grep -i 'dhcp.*no addresses available'"
     fi
 
     echo ""
@@ -785,7 +844,6 @@ generate_server_conf() {
         echo "  Client Address: $OVPN_IPV6_CLIENT"
         echo "  DNS Server: $OVPN_IPV6_DNS"
         echo "  Routes: All IPv6 traffic (2000::/3) via VPN"
-        echo "  Tunnel IPv6: Enabled (tun-ipv6)"
     else
         echo "  Status: DISABLED - IPv6 will NOT be configured"
         echo "  (Use option 3 to enable IPv6 before generating config)"
@@ -875,7 +933,6 @@ EOF
         cat << EOF >> ${OVPN_SERVER_CONF}
 # IPv6 configuration
 server-ipv6 ${OVPN_IPV6_POOL}
-tun-ipv6
 ifconfig-ipv6 ${OVPN_IPV6_SERVER} ${OVPN_IPV6_CLIENT}
 
 EOF
@@ -909,7 +966,6 @@ EOF
     if [ "$OVPN_IPV6_ENABLE" = "yes" ]; then
         cat << EOF >> ${OVPN_SERVER_CONF}
 # IPv6 push routes and DNS
-push "tun-ipv6"
 push "route-ipv6 2000::/3"
 push "dhcp-option DNS6 ${OVPN_IPV6_DNS}"
 
@@ -1801,10 +1857,15 @@ toggle_ipv6() {
                 echo ""
                 read -p "Enter new IPv6 subnet: " new_ipv6_pool
                 if [ -n "$new_ipv6_pool" ]; then
-                    OVPN_IPV6_POOL="$new_ipv6_pool"
-                    OVPN_IPV6_DNS="${OVPN_IPV6_POOL%::*}::1"
-                    echo "IPv6 subnet changed to: $OVPN_IPV6_POOL"
-                    echo "Note: Regenerate server.conf (option 1) to apply changes"
+                    # Check for conflicts with LAN
+                    if check_ipv6_subnet_conflict "$new_ipv6_pool"; then
+                        OVPN_IPV6_POOL="$new_ipv6_pool"
+                        OVPN_IPV6_DNS="${OVPN_IPV6_POOL%::*}::1"
+                        echo "IPv6 subnet changed to: $OVPN_IPV6_POOL"
+                        echo "Note: Regenerate server.conf (option 1) to apply changes"
+                    else
+                        echo "Subnet NOT changed due to conflict. Please choose a different subnet."
+                    fi
                 fi
                 ;;
             3)
@@ -1889,8 +1950,20 @@ toggle_ipv6() {
             read -p "Enter IPv6 subnet (or press Enter to keep current): " new_ipv6_pool
 
             if [ -n "$new_ipv6_pool" ]; then
-                OVPN_IPV6_POOL="$new_ipv6_pool"
-                OVPN_IPV6_DNS="${OVPN_IPV6_POOL%::*}::1"
+                # Check for conflicts with LAN
+                if ! check_ipv6_subnet_conflict "$new_ipv6_pool"; then
+                    echo "WARNING: Using conflicting subnet anyway. This may cause problems."
+                    read -p "Continue? (yes/no): " confirm_conflict
+                    if [ "$confirm_conflict" != "yes" ]; then
+                        echo "Keeping current subnet: $OVPN_IPV6_POOL"
+                        new_ipv6_pool=""
+                    fi
+                fi
+
+                if [ -n "$new_ipv6_pool" ]; then
+                    OVPN_IPV6_POOL="$new_ipv6_pool"
+                    OVPN_IPV6_DNS="${OVPN_IPV6_POOL%::*}::1"
+                fi
             fi
 
             echo ""

@@ -467,6 +467,83 @@ Shows expiration status for all certificates.
    logread | grep -i ipv6
    ```
 
+### DHCPv6 "No Addresses Available" Error
+
+If you see this error in your logs:
+```
+dnsmasq-dhcp[1]: DHCPADVERTISE(br-lan) 00:03:00:01:1c:d6:be:38:2d:50 no addresses available
+```
+
+This indicates your router's DHCPv6 server cannot allocate IPv6 addresses to LAN clients. This can affect VPN IPv6 configuration.
+
+**Common causes and solutions:**
+
+1. **No IPv6 prefix delegation from ISP:**
+   ```bash
+   # Check if you have an IPv6 prefix
+   ip -6 addr show dev br-lan | grep -v fe80
+
+   # Check WAN IPv6 status
+   ip -6 addr show | grep -v fe80
+
+   # Verify UCI prefix delegation
+   uci get network.wan6.ip6prefix
+   ```
+
+   **Solution:** Contact your ISP to enable IPv6, or configure IPv6 delegation in your modem/upstream router.
+
+2. **IPv6 disabled on LAN interface:**
+   ```bash
+   # Check LAN IPv6 assignment
+   uci show network.lan | grep ip6
+   ```
+
+   **Solution:** Enable IPv6 on LAN:
+   ```bash
+   uci set network.lan.ip6assign='64'
+   uci commit network
+   /etc/init.d/network restart
+   ```
+
+3. **Prefix delegation too small:**
+   - If your ISP only gives a single /64, you cannot subdivide it for both LAN and VPN
+   - **Solution for VPN:** Use a private ULA prefix (fd00::/8) for VPN instead
+   - Generate ULA at: https://unique-local-ipv6.com/
+   - Configure in script: Menu Option p → Option 3 (Toggle IPv6) → Enter ULA prefix
+
+4. **DHCPv6 range exhausted:**
+   ```bash
+   # Check odhcpd lease file
+   cat /tmp/hosts/odhcpd
+
+   # Check current assignments
+   ip -6 neigh show
+   ```
+
+   **Solution:** Increase IPv6 range or clear old leases:
+   ```bash
+   /etc/init.d/odhcpd restart
+   ```
+
+5. **VPN and LAN using same IPv6 subnet:**
+   - The script's auto-detect (Option 0) checks for this
+   - **Solution:** Use different /64 subnets for LAN and VPN
+   - If ISP provides /56, you have 256 available /64 subnets
+   - Example: LAN uses `2001:db8:1234:0::/64`, VPN uses `2001:db8:1234:1::/64`
+
+**Verification after fixes:**
+```bash
+# Should show IPv6 addresses being assigned
+logread -f | grep -i dhcp
+
+# Check if clients get addresses
+ip -6 neigh show dev br-lan
+
+# Verify prefix delegation
+uci show network.wan6
+uci show network.lan
+```
+
 ### Clients Can't Connect
 
 1. **Check firewall:**
@@ -638,22 +715,20 @@ When you enable IPv6 and generate the server configuration (Option 1), the scrip
 ```conf
 # IPv6 configuration
 server-ipv6 2001:db8:1234:1194::/64
-tun-ipv6
 ifconfig-ipv6 2001:db8:1234:1194::1 2001:db8:1234:1194::2
 
 # IPv6 push routes and DNS
-push "tun-ipv6"
 push "route-ipv6 2000::/3"
 push "dhcp-option DNS6 2001:db8:1234:1194::1"
 ```
 
 **What each directive does:**
 - `server-ipv6` - Assigns the IPv6 subnet to VPN clients
-- `tun-ipv6` - Enables IPv6 on the tunnel interface
 - `ifconfig-ipv6` - Sets server (::1) and client (::2) tunnel endpoints
-- `push "tun-ipv6"` - Tells clients to enable IPv6
 - `push "route-ipv6 2000::/3"` - Routes all global IPv6 traffic through VPN
 - `push "dhcp-option DNS6"` - Provides IPv6 DNS server to clients
+
+**Note:** The `tun-ipv6` directive is deprecated in modern OpenVPN versions and is no longer needed, as current operating systems handle IPv6 tunnel configuration automatically.
 
 ## Firewall Configuration
 
