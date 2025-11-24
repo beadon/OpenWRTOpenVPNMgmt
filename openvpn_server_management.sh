@@ -22,7 +22,7 @@ OVPN_PROTO="udp"              # Protocol: udp or tcp
 OVPN_POOL="10.8.0.0 255.255.255.0"  # VPN subnet
 
 # IPv6 configuration - EDIT THESE VALUES
-OVPN_IPV6_ENABLE="yes"        # Enable IPv6: yes or no
+OVPN_IPV6_ENABLE="no"         # Enable IPv6: yes or no (disabled by default to avoid configuration issues)
 OVPN_IPV6_MODE="static"       # Mode: "static" (simple, default) or "dhcpv6" (advanced, tracked)
 # IPv6 Pool - Auto-detected from WAN or set manually:
 # - For globally routable: Use a /64 from your ISP's delegation

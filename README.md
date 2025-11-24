@@ -88,9 +88,11 @@ This automatically detects:
 - **Network Configuration:** Port (1194), Protocol (UDP)
 - **Server Address:** DDNS hostname or WAN IP
 - **IPv4 Settings:** VPN subnet, DNS server, domain
-- **IPv6 Settings:** Prefix delegation from ISP, available subnets
+- **IPv6 Settings:** Prefix delegation from ISP, available subnets (informational only - IPv6 is disabled by default)
 
 Review the detected settings. The script will use these for configuration generation.
+
+**Note:** IPv6 support is disabled by default. If you want to enable IPv6 for your VPN, use Menu Option 3 after reviewing the auto-detected IPv6 settings.
 
 **DDNS Support:**
 
@@ -104,12 +106,14 @@ The auto-detect feature will automatically detect your DDNS hostname if configur
 
 If DDNS is not configured, the script will fall back to using your current WAN IP address.
 
-### Step 4: Configure IPv6 (Optional)
+### Step 4: Configure IPv6 (Optional - Advanced Users)
+
+**Note:** IPv6 is disabled by default to avoid configuration conflicts. Only enable if you understand IPv6 networking and have verified your router has proper IPv6 prefix delegation from your ISP.
 
 **Menu Option: 3**
 
 ```
-3) Toggle IPv6 support (Currently: yes)
+3) Toggle IPv6 support (Currently: no)
 Enable IPv6 support? (yes/no): yes
 
 Select IPv6 mode:
@@ -639,6 +643,18 @@ OVPN_IPV6_POOL_SIZE="253"     # Max clients
 
 
 # IPv6 VPN Tunnel Setup
+
+**IMPORTANT: IPv6 is DISABLED by default and is completely OPTIONAL.**
+
+IPv6 support is disabled by default to avoid configuration conflicts and issues. Most users do not need IPv6 for their VPN. Only enable IPv6 if:
+- You understand IPv6 networking
+- Your ISP provides IPv6 prefix delegation
+- You have verified your router's IPv6 configuration is working
+- You specifically need IPv6 connectivity through the VPN
+
+**If you're unsure, skip this section entirely.** The VPN will work perfectly with IPv4 only.
+
+---
 
 This section provides detailed guidance for setting up IPv6 on your OpenVPN server, enabling VPN clients to access IPv6 resources and receive globally routable IPv6 addresses.
 
