@@ -22,20 +22,20 @@ SCRIPT_VERSION="v2.5"
 OVPN_INSTANCE="server"
 
 # OpenVPN Server Settings
-OVPN_SERV="vpn.example.com"              # Your VPN server address (FQDN or IP)
-OVPN_PORT="1194"                         # VPN port
-OVPN_PROTO="udp"                         # Protocol: udp or tcp
-OVPN_POOL="10.8.0.0 255.255.255.0"      # VPN IPv4 subnet and netmask
+OVPN_SERV="vpn.example.com"               # Your VPN server address (FQDN or IP)
+OVPN_PORT="1194"                          # VPN port
+OVPN_PROTO="udp"                          # Protocol: udp or tcp
+OVPN_POOL="10.8.0.0 255.255.255.0"        # VPN IPv4 subnet and netmask
 
 # IPv6 Configuration
-OVPN_IPV6_ENABLE="no"                    # Enable IPv6: yes or no
-OVPN_IPV6_MODE="static"                  # Mode: "static" (simple) or "dhcpv6" (advanced)
-OVPN_IPV6_POOL="fd42:4242:4242:1194::/64"  # IPv6 VPN subnet (ULA or global)
-OVPN_IPV6_POOL_SIZE="253"                # Max IPv6 clients (for tracking)
+OVPN_IPV6_ENABLE="no"                     # Enable IPv6: yes or no
+OVPN_IPV6_MODE="static"                   # Mode: "static" (simple) or "dhcpv6" (advanced)
+OVPN_IPV6_POOL="fd42:4242:4242:1194::/64" # IPv6 VPN subnet (ULA or global)
+OVPN_IPV6_POOL_SIZE="253"                 # Max IPv6 clients (for tracking)
 
 # Directory Paths
-OVPN_PKI="/etc/easy-rsa/pki"             # PKI directory for certificates
-OVPN_DIR="/root/ovpn_config_out"         # Output directory for client configs
+OVPN_PKI="/etc/easy-rsa/pki"             # PKI    certificates   directory
+OVPN_DIR="/root/ovpn_config_out"         # Client configs output directory
 
 ################################################################################
 #                   ADVANCED CONFIGURATION (Auto-detected)                     #
@@ -3475,24 +3475,24 @@ while true; do
     echo "  l) List all OpenVPN instances"
     echo ""
     echo "Server Configuration:"
-    echo "  0) Auto-Detect server settings"
-    echo "  1) Generate/Update server.conf"
-    echo "  2) Restore server.conf from backup"
+    echo "  0) Auto-Detect settings"
+    echo "  1) Generate/Update settings"
+    echo "  2) Restore settings from backup"
     echo "  3) Toggle IPv6 support (Currently: $OVPN_IPV6_ENABLE)"
     echo "  p) Configure performance (bandwidth limiting)"
     echo ""
     echo "Server Control:"
     echo "  s) Start/Stop/Restart server"
     echo ""
-    echo "Certificate Management:"
-    echo "  4) Create new client certificate"
-    echo "  5) List current clients"
-    echo "  6) Revoke client certificate"
-    echo "  7) Check certificate expiration"
-    echo "  8) Renew certificate"
-    echo "  9) Show certificate details"
+    echo "Client Certificate Management:"
+    echo "  4) Create certificate"
+    echo "  5) List   all certificates"
+    echo "  6) Revoke certificate"
+    echo "  7) Check  certificate"
+    echo "  8) Renew  certificate"
+    echo "  9) More info about a certificate"
     echo ""
-    echo "Configuration Files:"
+    echo "VPN Profile Configuration:"
     echo " 10) Generate all .ovpn config files"
     echo " 11) Generate single .ovpn config file"
     echo ""
@@ -3505,9 +3505,9 @@ while true; do
     echo " 15) Configure VPN firewall access"
     echo ""
     echo "VPN Monitoring:"
-    echo " 16) Monitor VPN address usage (IPv4 & IPv6)"
+    echo " 16) Monitor VPN address usage"
     echo ""
-    echo "Diagnostics:"
+    echo "Troubleshooting:"
     echo " 17) Diagnose IPv6 routing issues"
     echo " 18) Check/Fix file permissions"
     echo ""
