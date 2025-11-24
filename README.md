@@ -1,4 +1,4 @@
-# OpenWRT OpenVPN Management 
+# OpenWRT OpenVPN Server Management 
 Openwrt VPN setup and management script, making management of Open VPN via CLI much simpler.
 
 The All-in-One OpenVPN Management Script

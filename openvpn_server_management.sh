@@ -1469,8 +1469,7 @@ EOF
 
     read -p "Restart OpenVPN instance '$OVPN_INSTANCE' to apply changes? (y/n): " restart
     if [ "$restart" = "y" ] || [ "$restart" = "Y" ]; then
-        /etc/init.d/openvpn restart "$OVPN_INSTANCE"
-        echo "OpenVPN instance '$OVPN_INSTANCE' restarted"
+        safe_restart_openvpn "$OVPN_INSTANCE"
     else
         echo "Remember to restart OpenVPN: /etc/init.d/openvpn restart $OVPN_INSTANCE"
     fi
@@ -1510,8 +1509,7 @@ restore_server_conf() {
     
     read -p "Restart OpenVPN daemon? (y/n): " restart
     if [ "$restart" = "y" ] || [ "$restart" = "Y" ]; then
-        /etc/init.d/openvpn restart
-        echo "OpenVPN daemon restarted"
+        safe_restart_openvpn "$OVPN_INSTANCE"
     fi
 }
 
@@ -1887,8 +1885,7 @@ create_client() {
     echo ""
     read -t 10 -p "OpenVPN Daemon restart. 10s timeout. Continue? (y/n): " response
     if [ "$response" = "y" ] || [ "$response" = "Y" ]; then
-        /etc/init.d/openvpn restart
-        echo "OpenVPN daemon restarted"
+        safe_restart_openvpn "$OVPN_INSTANCE"
     else
         echo "OpenVPN daemon not restarted."
         echo "Keys will not be valid until the daemon refreshes them"
@@ -1959,8 +1956,7 @@ revoke_client() {
             
             read -p "Restart OpenVPN daemon to apply changes? (y/n): " response
             if [ "$response" = "y" ] || [ "$response" = "Y" ]; then
-                /etc/init.d/openvpn restart
-                echo "OpenVPN daemon restarted"
+                safe_restart_openvpn "$OVPN_INSTANCE"
             else
                 echo "Remember to restart OpenVPN daemon for changes to take effect"
             fi
@@ -2662,6 +2658,334 @@ install_luci_openvpn() {
     echo ""
 }
 
+# Helper function to check for active VPN connections
+check_active_connections() {
+    local instance="${1:-$OVPN_INSTANCE}"
+    local connection_count=0
+    local status_file="/var/log/openvpn-status.log"
+
+    # Try to get count from status file if it exists
+    if [ -f "$status_file" ]; then
+        # Force update of status file by sending SIGUSR2 to OpenVPN process
+        local openvpn_pid=$(pgrep -f "[o]penvpn.*${instance}" | head -1)
+        if [ -n "$openvpn_pid" ]; then
+            kill -USR2 "$openvpn_pid" 2>/dev/null
+            sleep 1
+        fi
+
+        # Count CLIENT_LIST entries (excluding HEADER line)
+        connection_count=$(grep "^CLIENT_LIST" "$status_file" 2>/dev/null | grep -v "HEADER" | wc -l)
+    else
+        # Fallback: check for tun interfaces and neighbor entries
+        for tun_if in $(ip link show | grep -o "tun[0-9]*" | sort -u); do
+            local neighbors=$(ip neigh show dev "$tun_if" 2>/dev/null | grep -v "FAILED" | wc -l)
+            connection_count=$((connection_count + neighbors))
+        done
+    fi
+
+    echo "$connection_count"
+}
+
+# Helper function to ensure 'at' utility is installed
+ensure_at_installed() {
+    if ! command -v at >/dev/null 2>&1; then
+        echo ""
+        echo "The 'at' utility is not installed. It's needed for scheduled restarts."
+        echo "Installing 'at' package..."
+        echo ""
+
+        if opkg update && opkg install at; then
+            echo ""
+            echo "'at' utility installed successfully."
+
+            # Enable and start atd daemon
+            /etc/init.d/atd enable 2>/dev/null
+            /etc/init.d/atd start 2>/dev/null
+
+            return 0
+        else
+            echo ""
+            echo "ERROR: Failed to install 'at' utility."
+            echo "Scheduled restarts will not be available."
+            return 1
+        fi
+    fi
+
+    # Ensure atd daemon is running
+    if ! pgrep atd >/dev/null 2>&1; then
+        /etc/init.d/atd start 2>/dev/null
+    fi
+
+    return 0
+}
+
+# Function to perform safe restart with connection check and scheduling options
+safe_restart_openvpn() {
+    local instance="${1:-$OVPN_INSTANCE}"
+    local force="${2:-no}"
+    local active_connections
+    local restart_choice
+    local schedule_time
+
+    # Check for active connections
+    active_connections=$(check_active_connections "$instance")
+
+    if [ "$active_connections" -gt 0 ] && [ "$force" != "yes" ]; then
+        echo ""
+        echo "=========================================="
+        echo "WARNING: Active VPN Connections Detected"
+        echo "=========================================="
+        echo ""
+        echo "There are currently $active_connections active client(s) connected."
+        echo ""
+        echo "Restarting the server will disconnect all clients."
+        echo ""
+        echo "Options:"
+        echo "  1) Restart now (disconnect clients immediately)"
+        echo "  2) Schedule restart for later (using 'at' utility)"
+        echo "  3) Cancel restart"
+        echo ""
+        read -p "Select option (1-3): " restart_choice
+
+        case $restart_choice in
+            1)
+                echo ""
+                echo "Restarting OpenVPN server immediately..."
+                /etc/init.d/openvpn restart "$instance"
+                sleep 2
+                if pgrep -f "[o]penvpn.*${instance}" >/dev/null 2>&1; then
+                    echo "Server restarted successfully."
+                else
+                    echo "WARNING: Server may have failed to start. Check logs: logread | grep openvpn"
+                fi
+                ;;
+            2)
+                # Ensure 'at' is installed
+                if ! ensure_at_installed; then
+                    echo ""
+                    echo "Cannot schedule restart without 'at' utility."
+                    echo "Please try option 1 to restart now, or cancel."
+                    return 1
+                fi
+
+                echo ""
+                echo "Schedule restart for later"
+                echo ""
+                echo "Examples:"
+                echo "  - 'now + 30 minutes' or '30 minutes'"
+                echo "  - 'now + 2 hours' or '2 hours'"
+                echo "  - '23:30' (11:30 PM today)"
+                echo "  - '02:00' (2:00 AM tomorrow if past 2 AM now)"
+                echo ""
+                read -p "Enter time (or 'c' to cancel): " schedule_time
+
+                if [ "$schedule_time" = "c" ] || [ "$schedule_time" = "C" ] || [ -z "$schedule_time" ]; then
+                    echo "Restart cancelled."
+                    return 0
+                fi
+
+                # Schedule the restart using 'at'
+                echo "/etc/init.d/openvpn restart $instance" | at "$schedule_time" 2>/dev/null
+
+                if [ $? -eq 0 ]; then
+                    echo ""
+                    echo "Restart scheduled successfully for: $schedule_time"
+                    echo ""
+                    echo "To view scheduled jobs: atq"
+                    echo "To cancel a scheduled job: atrm <job_number>"
+                else
+                    echo ""
+                    echo "ERROR: Failed to schedule restart."
+                    echo "Check your time format and try again."
+                    return 1
+                fi
+                ;;
+            3|c|C)
+                echo ""
+                echo "Restart cancelled."
+                return 0
+                ;;
+            *)
+                echo ""
+                echo "Invalid option. Restart cancelled."
+                return 1
+                ;;
+        esac
+    else
+        # No active connections or force=yes, restart immediately
+        if [ "$active_connections" -eq 0 ]; then
+            echo ""
+            echo "No active connections detected."
+        fi
+        echo "Restarting OpenVPN server..."
+        /etc/init.d/openvpn restart "$instance"
+        sleep 2
+        if pgrep -f "[o]penvpn.*${instance}" >/dev/null 2>&1; then
+            echo "Server restarted successfully."
+        else
+            echo "WARNING: Server may have failed to start. Check logs: logread | grep openvpn"
+        fi
+    fi
+
+    echo ""
+}
+
+# Function to control OpenVPN server (start/stop/restart)
+control_openvpn_server() {
+    local action
+    local status_output
+    local is_running
+    local confirm
+
+    echo ""
+    echo "=== OpenVPN Server Control ==="
+    echo ""
+    echo "Current instance: $OVPN_INSTANCE"
+    echo ""
+
+    # Check current status
+    if pgrep -f "[o]penvpn.*${OVPN_INSTANCE}" >/dev/null 2>&1; then
+        is_running=1
+        echo "Status: RUNNING"
+    else
+        is_running=0
+        echo "Status: STOPPED"
+    fi
+
+    echo ""
+    echo "Available actions:"
+    echo "  1) Start server"
+    echo "  2) Stop server"
+    echo "  3) Restart server"
+    echo "  4) Check detailed status"
+    echo "  5) Enable on boot"
+    echo "  6) Disable on boot"
+    echo "  7) Cancel"
+    echo ""
+    read -p "Select action (1-7): " action
+
+    case $action in
+        1)
+            if [ $is_running -eq 1 ]; then
+                echo ""
+                echo "Server is already running."
+                read -p "Restart instead? (y/n): " confirm
+                if [ "$confirm" = "y" ] || [ "$confirm" = "Y" ]; then
+                    safe_restart_openvpn "$OVPN_INSTANCE"
+                fi
+            else
+                echo ""
+                echo "Starting OpenVPN server instance: $OVPN_INSTANCE"
+                /etc/init.d/openvpn start $OVPN_INSTANCE
+                echo ""
+                sleep 2
+                if pgrep -f "[o]penvpn.*${OVPN_INSTANCE}" >/dev/null 2>&1; then
+                    echo "Server started successfully."
+                else
+                    echo "WARNING: Server may have failed to start. Check logs with: logread | grep openvpn"
+                fi
+            fi
+            ;;
+        2)
+            if [ $is_running -eq 0 ]; then
+                echo ""
+                echo "Server is already stopped."
+            else
+                echo ""
+                echo "WARNING: This will disconnect all connected VPN clients."
+                read -p "Stop OpenVPN server? (yes/no): " confirm
+                if [ "$confirm" = "yes" ]; then
+                    echo ""
+                    echo "Stopping OpenVPN server instance: $OVPN_INSTANCE"
+                    /etc/init.d/openvpn stop $OVPN_INSTANCE
+                    echo ""
+                    sleep 2
+                    if ! pgrep -f "[o]penvpn.*${OVPN_INSTANCE}" >/dev/null 2>&1; then
+                        echo "Server stopped successfully."
+                    else
+                        echo "WARNING: Server may still be running. Try: killall openvpn"
+                    fi
+                else
+                    echo "Cancelled."
+                fi
+            fi
+            ;;
+        3)
+            safe_restart_openvpn "$OVPN_INSTANCE"
+            ;;
+        4)
+            echo ""
+            echo "=== Detailed Server Status ==="
+            echo ""
+            echo "Instance: $OVPN_INSTANCE"
+            echo ""
+
+            # Check process status
+            if pgrep -f "[o]penvpn.*${OVPN_INSTANCE}" >/dev/null 2>&1; then
+                echo "Process Status: RUNNING"
+                echo "PID: $(pgrep -f "[o]penvpn.*${OVPN_INSTANCE}")"
+            else
+                echo "Process Status: STOPPED"
+            fi
+            echo ""
+
+            # Check UCI enabled status
+            if uci get openvpn.${OVPN_INSTANCE}.enabled 2>/dev/null | grep -q "1"; then
+                echo "Boot Status: ENABLED (will start on boot)"
+            else
+                echo "Boot Status: DISABLED (will not start on boot)"
+            fi
+            echo ""
+
+            # Check config file exists
+            if [ -f "$OVPN_SERVER_CONF" ]; then
+                echo "Config File: EXISTS ($OVPN_SERVER_CONF)"
+            else
+                echo "Config File: MISSING ($OVPN_SERVER_CONF)"
+            fi
+            echo ""
+
+            # Show recent logs
+            echo "Recent logs (last 10 lines):"
+            echo "---"
+            logread | grep -i openvpn | grep -i "$OVPN_INSTANCE" | tail -10
+            echo "---"
+            ;;
+        5)
+            echo ""
+            echo "Enabling OpenVPN server to start on boot..."
+            uci set openvpn.${OVPN_INSTANCE}.enabled='1'
+            uci commit openvpn
+            /etc/init.d/openvpn enable
+            echo ""
+            echo "OpenVPN instance '$OVPN_INSTANCE' will now start automatically on boot."
+            ;;
+        6)
+            echo ""
+            read -p "Disable OpenVPN server from starting on boot? (yes/no): " confirm
+            if [ "$confirm" = "yes" ]; then
+                echo ""
+                echo "Disabling OpenVPN server from starting on boot..."
+                uci set openvpn.${OVPN_INSTANCE}.enabled='0'
+                uci commit openvpn
+                echo ""
+                echo "OpenVPN instance '$OVPN_INSTANCE' will NOT start automatically on boot."
+                echo "Note: Server is still running if it was already started."
+            else
+                echo "Cancelled."
+            fi
+            ;;
+        7|c|C)
+            echo "Cancelled"
+            ;;
+        *)
+            echo "Invalid option"
+            ;;
+    esac
+
+    echo ""
+}
+
 # Helper function to get file permissions in octal format (works on all OpenWrt)
 get_file_perms() {
     local filepath="$1"
@@ -2979,6 +3303,9 @@ while true; do
     echo "  3) Toggle IPv6 support (Currently: $OVPN_IPV6_ENABLE)"
     echo "  p) Configure performance (bandwidth limiting)"
     echo ""
+    echo "Server Control:"
+    echo "  s) Start/Stop/Restart server"
+    echo ""
     echo "Certificate Management:"
     echo "  4) Create new client certificate"
     echo "  5) List current clients"
@@ -3034,6 +3361,10 @@ while true; do
             ;;
         p|P)
             configure_performance
+            read -p "Press Enter to continue..."
+            ;;
+        s|S)
+            control_openvpn_server
             read -p "Press Enter to continue..."
             ;;
         4)
