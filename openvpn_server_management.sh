@@ -1,34 +1,44 @@
 #!/bin/sh
 
-# Configuration parameters
-OVPN_PKI="/etc/easy-rsa/pki"
-OVPN_DIR="/root/ovpn_config_out"
+################################################################################
+#                        USER CONFIGURATION SECTION                            #
+#                     Edit these values for your setup                         #
+################################################################################
 
-# Instance management (UCI-aware)
-OVPN_INSTANCE="server"        # Current instance being managed (default: "server")
-OVPN_INSTANCE_TYPE="server"   # Type: server only (clients not managed by this script)
+# Instance to manage (default: "server")
+OVPN_INSTANCE="server"
 
-# Dynamic paths based on instance
+# OpenVPN Server Settings
+OVPN_SERV="vpn.example.com"              # Your VPN server address (FQDN or IP)
+OVPN_PORT="1194"                         # VPN port
+OVPN_PROTO="udp"                         # Protocol: udp or tcp
+OVPN_POOL="10.8.0.0 255.255.255.0"      # VPN IPv4 subnet and netmask
+
+# IPv6 Configuration
+OVPN_IPV6_ENABLE="no"                    # Enable IPv6: yes or no
+OVPN_IPV6_MODE="static"                  # Mode: "static" (simple) or "dhcpv6" (advanced)
+OVPN_IPV6_POOL="fd42:4242:4242:1194::/64"  # IPv6 VPN subnet (ULA or global)
+OVPN_IPV6_POOL_SIZE="253"                # Max IPv6 clients (for tracking)
+
+# Directory Paths
+OVPN_PKI="/etc/easy-rsa/pki"             # PKI directory for certificates
+OVPN_DIR="/root/ovpn_config_out"         # Output directory for client configs
+
+################################################################################
+#                   ADVANCED CONFIGURATION (Auto-detected)                     #
+#              No editing required below unless troubleshooting                #
+################################################################################
+
+# Instance configuration
+OVPN_INSTANCE_TYPE="server"              # Type: server only (clients not managed)
+
+# Dynamic paths (updated when instance changes)
 OVPN_SERVER_CONF="/etc/openvpn/${OVPN_INSTANCE}.conf"
 OVPN_SERVER_BACKUP="/etc/openvpn/${OVPN_INSTANCE}.conf.BAK"
 
+# Easy-RSA environment
 export EASYRSA_PKI="${OVPN_PKI}"
 export EASYRSA_BATCH="1"
-
-# OpenVPN server configuration - EDIT THESE VALUES
-OVPN_SERV="vpn.example.com"  # Your VPN server address
-OVPN_PORT="1194"              # VPN port
-OVPN_PROTO="udp"              # Protocol: udp or tcp
-OVPN_POOL="10.8.0.0 255.255.255.0"  # VPN subnet
-
-# IPv6 configuration - EDIT THESE VALUES
-OVPN_IPV6_ENABLE="no"         # Enable IPv6: yes or no (disabled by default to avoid configuration issues)
-OVPN_IPV6_MODE="static"       # Mode: "static" (simple, default) or "dhcpv6" (advanced, tracked)
-# IPv6 Pool - Auto-detected from WAN or set manually:
-# - For globally routable: Use a /64 from your ISP's delegation
-# - For ULA (private): Generate at https://unique-local-ipv6.com/
-OVPN_IPV6_POOL="fd42:4242:4242:1194::/64"  # IPv6 VPN subnet
-OVPN_IPV6_POOL_SIZE="253"     # Max clients (for tracking/limiting)
 
 # Auto-detect DNS and domain from OpenWrt UCI
 OVPN_DNS="${OVPN_POOL%.* *}.1"
@@ -120,7 +130,7 @@ list_openvpn_instances() {
         fi
 
         # Check if running
-        if pgrep -f "[/]openvpn .*${instance_name}" >/dev/null 2>&1; then
+        if [ -n "$(get_openvpn_pid "$instance_name")" ]; then
             running_status="RUNNING"
         else
             running_status="stopped"
@@ -2000,7 +2010,7 @@ monitor_vpn_usage() {
             instance_count=$((instance_count + 1))
 
             # Check if running
-            if pgrep -f "[/]openvpn .*${inst}" >/dev/null 2>&1; then
+            if [ -n "$(get_openvpn_pid "$inst")" ]; then
                 status="RUNNING"
             else
                 status="stopped"
@@ -2214,7 +2224,7 @@ monitor_single_instance() {
 
     if [ -f "$log_file" ]; then
         # Find PID for this specific instance
-        openvpn_pid=$(pgrep -f "[/]openvpn .*${instance}" | head -1)
+        openvpn_pid=$(get_openvpn_pid "$instance")
         if [ -n "$openvpn_pid" ]; then
             echo "Requesting status update for instance '$instance' (sending SIGUSR2 to PID $openvpn_pid)..."
             kill -USR2 $openvpn_pid 2>/dev/null
@@ -2744,6 +2754,18 @@ get_log_file_path() {
     echo "$log_path"
 }
 
+# Helper function to get the PID of the OpenVPN process for a specific instance
+get_openvpn_pid() {
+    local instance="${1:-$OVPN_INSTANCE}"
+    local pid
+
+    # Find OpenVPN process for this instance
+    # Pattern: [/]openvpn (space) matches /usr/sbin/openvpn with args, not scripts
+    pid=$(pgrep -f "[/]openvpn .*${instance}" | head -1)
+
+    echo "$pid"
+}
+
 # Helper function to check for active VPN connections
 check_active_connections() {
     local instance="${1:-$OVPN_INSTANCE}"
@@ -2756,7 +2778,7 @@ check_active_connections() {
     log_file=$(get_log_file_path "$instance")
 
     # First check if OpenVPN process is running
-    openvpn_pid=$(pgrep -f "[/]openvpn .*${instance}" | head -1)
+    openvpn_pid=$(get_openvpn_pid "$instance")
 
     if [ -n "$openvpn_pid" ]; then
         # Process is running - send SIGUSR2 to trigger status dump to log
@@ -2895,7 +2917,7 @@ safe_restart_openvpn() {
                 echo "Restarting OpenVPN server immediately..."
                 /etc/init.d/openvpn restart "$instance"
                 sleep 2
-                if pgrep -f "[/]openvpn .*${instance}" >/dev/null 2>&1; then
+                if [ -n "$(get_openvpn_pid "$instance")" ]; then
                     echo "Server restarted successfully."
                 else
                     echo "WARNING: Server may have failed to start. Check logs: logread | grep openvpn"
@@ -2962,7 +2984,7 @@ safe_restart_openvpn() {
         echo "Restarting OpenVPN server..."
         /etc/init.d/openvpn restart "$instance"
         sleep 2
-        if pgrep -f "[/]openvpn .*${instance}" >/dev/null 2>&1; then
+        if [ -n "$(get_openvpn_pid "$instance")" ]; then
             echo "Server restarted successfully."
         else
             echo "WARNING: Server may have failed to start. Check logs: logread | grep openvpn"
@@ -2986,7 +3008,7 @@ control_openvpn_server() {
     echo ""
 
     # Check current status
-    if pgrep -f "[/]openvpn .*${OVPN_INSTANCE}" >/dev/null 2>&1; then
+    if [ -n "$(get_openvpn_pid "$OVPN_INSTANCE")" ]; then
         is_running=1
         echo "Status: RUNNING"
     else
@@ -3021,7 +3043,7 @@ control_openvpn_server() {
                 /etc/init.d/openvpn start $OVPN_INSTANCE
                 echo ""
                 sleep 2
-                if pgrep -f "[/]openvpn .*${OVPN_INSTANCE}" >/dev/null 2>&1; then
+                if [ -n "$(get_openvpn_pid "$OVPN_INSTANCE")" ]; then
                     echo "Server started successfully."
                 else
                     echo "WARNING: Server may have failed to start. Check logs with: logread | grep openvpn"
@@ -3042,7 +3064,7 @@ control_openvpn_server() {
                     /etc/init.d/openvpn stop $OVPN_INSTANCE
                     echo ""
                     sleep 2
-                    if ! pgrep -f "[/]openvpn .*${OVPN_INSTANCE}" >/dev/null 2>&1; then
+                    if [ -z "$(get_openvpn_pid "$OVPN_INSTANCE")" ]; then
                         echo "Server stopped successfully."
                     else
                         echo "WARNING: Server may still be running. Try: killall openvpn"
@@ -3063,9 +3085,10 @@ control_openvpn_server() {
             echo ""
 
             # Check process status
-            if pgrep -f "[/]openvpn .*${OVPN_INSTANCE}" >/dev/null 2>&1; then
+            local vpn_pid=$(get_openvpn_pid "$OVPN_INSTANCE")
+            if [ -n "$vpn_pid" ]; then
                 echo "Process Status: RUNNING"
-                echo "PID: $(pgrep -f "[/]openvpn .*${OVPN_INSTANCE}")"
+                echo "PID: $vpn_pid"
             else
                 echo "Process Status: STOPPED"
             fi
