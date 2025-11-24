@@ -38,7 +38,9 @@ OVPN_DOMAIN=$(uci get dhcp.@dnsmasq[0].domain 2>/dev/null || echo "lan")
 OVPN_IPV6_DNS="${OVPN_IPV6_POOL%::*}::1"
 
 # Performance configuration for CPU-limited devices
-OVPN_COMPRESSION="no"           # Compression: no (default for CPU performance), lz4, lzo, or lz4-v2
+# Note: Compression is NOT configured due to OpenVPN deprecation and stability issues
+# See: https://community.openvpn.net/Pages/Compression
+# OVPN_COMPRESSION="no"         # NOT USED - Compression directive omitted from config
 OVPN_BANDWIDTH_LIMIT="0"        # Bandwidth limit in bytes/sec (0 = disabled, e.g., 1000000 = ~8 Mbps)
 
 # Function to update dynamic paths when instance changes
@@ -850,11 +852,7 @@ generate_server_conf() {
     fi
     echo ""
     echo "Performance Settings:"
-    if [ "$OVPN_COMPRESSION" = "no" ]; then
-        echo "  Compression: DISABLED (recommended for CPU-limited routers)"
-    else
-        echo "  Compression: $OVPN_COMPRESSION (may impact CPU performance)"
-    fi
+    echo "  Compression: Not configured (deprecated - see OpenVPN community docs)"
     if [ "$OVPN_BANDWIDTH_LIMIT" -gt 0 ] 2>/dev/null; then
         OVPN_BW_MBPS=$(awk "BEGIN {printf \"%.2f\", ($OVPN_BANDWIDTH_LIMIT * 8) / 1000000}")
         echo "  Bandwidth Limit: $OVPN_BANDWIDTH_LIMIT bytes/sec (~${OVPN_BW_MBPS} Mbps)"
@@ -986,26 +984,9 @@ log-append /var/log/openvpn.log
 verb 3
 EOF
 
-    # Add performance settings (compression and bandwidth)
-    cat << EOF >> ${OVPN_SERVER_CONF}
-
-# Performance settings for CPU-limited devices
-EOF
-
-    # Add compression setting
-    if [ "$OVPN_COMPRESSION" = "no" ]; then
-        cat << EOF >> ${OVPN_SERVER_CONF}
-# Compression disabled (recommended for CPU-limited routers)
-compress
-
-EOF
-    elif [ "$OVPN_COMPRESSION" = "lz4" ] || [ "$OVPN_COMPRESSION" = "lzo" ] || [ "$OVPN_COMPRESSION" = "lz4-v2" ]; then
-        cat << EOF >> ${OVPN_SERVER_CONF}
-# Compression enabled (may impact CPU performance)
-compress ${OVPN_COMPRESSION}
-
-EOF
-    fi
+    # Add performance settings (bandwidth limiting only)
+    # Note: Compression is NOT configured due to deprecation and stability issues
+    # See: https://community.openvpn.net/Pages/Compression
 
     # Add bandwidth limiting if enabled
     if [ "$OVPN_BANDWIDTH_LIMIT" -gt 0 ] 2>/dev/null; then
@@ -1997,12 +1978,9 @@ configure_performance() {
     echo "Current Performance Settings:"
     echo ""
     echo "Compression:"
-    if [ "$OVPN_COMPRESSION" = "no" ]; then
-        echo "  Status: DISABLED (recommended for CPU-limited routers)"
-    else
-        echo "  Status: ENABLED ($OVPN_COMPRESSION)"
-        echo "  WARNING: Compression uses significant CPU resources"
-    fi
+    echo "  Status: NOT CONFIGURED (deprecated by OpenVPN project)"
+    echo "  See: https://community.openvpn.net/Pages/Compression"
+    echo "  Note: Compression directive omitted due to stability issues"
     echo ""
     echo "Bandwidth Limiting:"
     if [ "$OVPN_BANDWIDTH_LIMIT" -gt 0 ] 2>/dev/null; then
@@ -2014,40 +1992,13 @@ configure_performance() {
     fi
     echo ""
     echo "Options:"
-    echo "  1) Configure compression"
-    echo "  2) Configure bandwidth limiting"
-    echo "  3) Cancel"
+    echo "  1) Configure bandwidth limiting"
+    echo "  2) Cancel"
     echo ""
-    read -p "Select option (1-3): " perf_option
+    read -p "Select option (1-2): " perf_option
 
     case $perf_option in
         1)
-            echo ""
-            echo "=== Compression Configuration ==="
-            echo ""
-            echo "Current setting: $OVPN_COMPRESSION"
-            echo ""
-            echo "Available options:"
-            echo "  no     - Disabled (recommended for CPU-limited routers)"
-            echo "  lz4    - Fast compression (moderate CPU usage)"
-            echo "  lz4-v2 - LZ4 v2 compression (moderate CPU usage)"
-            echo "  lzo    - Legacy compression (higher CPU usage)"
-            echo ""
-            echo "NOTE: Compression can significantly impact router CPU performance."
-            echo "For most OpenWrt routers, disabled compression is recommended."
-            echo ""
-            read -p "Enter compression setting (no/lz4/lz4-v2/lzo): " new_compression
-
-            if [ "$new_compression" = "no" ] || [ "$new_compression" = "lz4" ] || [ "$new_compression" = "lz4-v2" ] || [ "$new_compression" = "lzo" ]; then
-                OVPN_COMPRESSION="$new_compression"
-                echo ""
-                echo "Compression changed to: $OVPN_COMPRESSION"
-                echo "Note: Regenerate server.conf (option 1) to apply changes"
-            else
-                echo "Invalid option. No changes made."
-            fi
-            ;;
-        2)
             echo ""
             echo "=== Bandwidth Limiting Configuration ==="
             echo ""
@@ -2186,7 +2137,7 @@ while true; do
     echo "  1) Generate/Update server.conf"
     echo "  2) Restore server.conf from backup"
     echo "  3) Toggle IPv6 support (Currently: $OVPN_IPV6_ENABLE)"
-    echo "  p) Configure performance (compression & bandwidth)"
+    echo "  p) Configure performance (bandwidth limiting)"
     echo ""
     echo "Certificate Management:"
     echo "  4) Create new client certificate"

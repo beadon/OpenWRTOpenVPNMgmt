@@ -130,48 +130,49 @@ Enter max clients limit (default 253): 100
 - **Globally routable:** Use a /64 from your ISP's delegation (detected in Step 3)
 - **Private ULA:** Generate at https://unique-local-ipv6.com/
 
-### Step 4.5: Configure Performance Settings (Optional but Recommended)
+### Step 4.5: Configure Performance Settings (Optional)
 
 **Menu Option: p**
 
 ```
-p) Configure performance (compression & bandwidth)
+p) Configure performance (bandwidth limiting)
 
 Current Performance Settings:
 
 Compression:
-  Status: DISABLED (recommended for CPU-limited routers)
+  Status: NOT CONFIGURED (deprecated by OpenVPN project)
+  See: https://community.openvpn.net/Pages/Compression
+  Note: Compression directive omitted due to stability issues
 
 Bandwidth Limiting:
   Status: DISABLED (unlimited)
 
 Options:
-  1) Configure compression
-  2) Configure bandwidth limiting
-  3) Cancel
+  1) Configure bandwidth limiting
+  2) Cancel
 ```
 
-#### Compression Settings
+#### Why Compression is Not Included
 
-**Default: Disabled (recommended)**
+**Compression is NOT configured in generated server files** due to:
 
-Compression is disabled by default because OpenWrt routers typically have limited CPU resources. Enabling compression can significantly impact router performance, especially under high VPN load.
+1. **Deprecated by OpenVPN Project**
+   - OpenVPN community officially discourages compression
+   - See: https://community.openvpn.net/Pages/Compression
 
-**Available options:**
-- `no` - Disabled (recommended for CPU-limited routers)
-- `lz4` - Fast compression (moderate CPU usage)
-- `lz4-v2` - LZ4 v2 compression (moderate CPU usage)
-- `lzo` - Legacy compression (higher CPU usage)
+2. **Stability Issues**
+   - The `compress` directive causes connection stability problems
+   - Can lead to client disconnections and reconnection loops
 
-**When to enable compression:**
-- Your router has a powerful CPU (multi-core, 1GHz+)
-- VPN traffic consists mostly of compressible data (text, logs, etc.)
-- Network bandwidth is more limited than CPU capacity
+3. **Security Concerns**
+   - Compression can expose vulnerabilities (VORACLE attack)
+   - Modern encrypted traffic is already compressed
 
-**When to keep compression disabled:**
-- Router has limited CPU (typical for most OpenWrt devices)
-- VPN traffic consists of already-compressed data (video, images, encrypted backups)
-- You prioritize router stability and responsiveness
+4. **Performance Impact**
+   - CPU overhead on router often exceeds bandwidth savings
+   - Most internet traffic is already compressed (HTTPS, videos, images)
+
+**Recommendation:** Leave compression disabled. The script does not add any compression directives to the server configuration.
 
 #### Bandwidth Limiting
 
@@ -197,8 +198,6 @@ Enter bandwidth limit in bytes per second:
 - **Stability:** Reduce load on CPU-limited routers
 
 **Note:** The `shaper` directive applies to outgoing traffic from the server. For more advanced per-client bandwidth control, consider using Traffic Control (tc) scripts.
-
-**Performance Tip:** For most OpenWrt routers, use disabled compression with bandwidth limiting to balance performance and resource usage.
 
 ### Step 5: Generate Server Configuration
 
