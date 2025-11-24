@@ -145,6 +145,8 @@ This creates `/etc/openvpn/server.conf` with:
 
 **UCI Integration:** Automatically updates `/etc/config/openvpn` with the instance configuration.
 
+**Autostart Configuration:** The script automatically enables the OpenVPN service to start on router boot by running `/etc/init.d/openvpn enable`. This ensures your VPN server starts automatically after power cycles or reboots.
+
 ### Step 6: Configure Firewall
 
 **Menu Option: 15**
@@ -410,6 +412,43 @@ Shows expiration status for all certificates.
    ```bash
    logread | grep openvpn
    cat /var/log/openvpn.log
+   ```
+
+### OpenVPN Doesn't Start After Reboot
+
+1. **Check if service is enabled for autostart:**
+   ```bash
+   /etc/init.d/openvpn enabled
+   echo $?
+   # Should return: 0 (enabled) or 1 (disabled)
+   ```
+
+2. **Enable autostart if disabled:**
+   ```bash
+   /etc/init.d/openvpn enable
+   ```
+
+3. **Check UCI instance is enabled:**
+   ```bash
+   uci get openvpn.server.enabled
+   # Should return: 1
+   ```
+
+4. **Verify both are configured:**
+   ```bash
+   # Check init.d
+   ls -l /etc/rc.d/S*openvpn*
+   # Should show: /etc/rc.d/S90openvpn -> ../init.d/openvpn
+
+   # Check UCI
+   uci show openvpn.server
+   # Should show: openvpn.server.enabled='1'
+   ```
+
+5. **Manual restart to verify configuration:**
+   ```bash
+   /etc/init.d/openvpn restart
+   # Should start without errors
    ```
 
 ### Need to Regenerate Client Config

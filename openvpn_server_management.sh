@@ -929,6 +929,17 @@ EOF
     echo "UCI instance '$OVPN_INSTANCE' updated"
     echo ""
 
+    # Enable OpenVPN service to start at boot
+    echo "Checking autostart configuration..."
+    if /etc/init.d/openvpn enabled; then
+        echo "  OpenVPN autostart already enabled"
+    else
+        echo "  Enabling OpenVPN service to start at boot..."
+        /etc/init.d/openvpn enable
+        echo "  ✓ OpenVPN will now start automatically on router reboot"
+    fi
+    echo ""
+
     echo "IMPORTANT: Review the configuration file before restarting OpenVPN"
     echo ""
 
