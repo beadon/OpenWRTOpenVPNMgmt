@@ -2675,10 +2675,6 @@ check_fix_permissions() {
     local actual_perms
     local temp_issues
     local counter
-    local filepath
-    local current
-    local expected
-    local description
 
     echo ""
     echo "=== OpenVPN File Permissions Check ==="
