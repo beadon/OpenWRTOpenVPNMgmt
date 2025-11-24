@@ -2662,6 +2662,49 @@ install_luci_openvpn() {
     echo ""
 }
 
+# Helper function to get file permissions in octal format (works on all OpenWrt)
+get_file_perms() {
+    local filepath="$1"
+    local perms=""
+
+    # Try BusyBox stat first (most efficient)
+    perms=$(stat -c "%a" "$filepath" 2>/dev/null)
+
+    # If stat failed or returned empty, fall back to ls parsing
+    if [ -z "$perms" ]; then
+        # Use ls -l and parse permissions
+        # Format: -rwxr-xr-x or drwxr-xr-x
+        local ls_perms=$(ls -ld "$filepath" 2>/dev/null | awk '{print $1}')
+
+        # Convert symbolic to octal (e.g., -rw-r--r-- -> 644)
+        if [ -n "$ls_perms" ]; then
+            local user=0 group=0 other=0
+
+            # User permissions (chars 2-4)
+            echo "$ls_perms" | grep -q '^.r' && user=$((user + 4))
+            echo "$ls_perms" | grep -q '^..w' && user=$((user + 2))
+            echo "$ls_perms" | grep -q '^...x' && user=$((user + 1))
+            echo "$ls_perms" | grep -q '^...s' && user=$((user + 1))
+
+            # Group permissions (chars 5-7)
+            echo "$ls_perms" | grep -q '^....r' && group=$((group + 4))
+            echo "$ls_perms" | grep -q '^.....w' && group=$((group + 2))
+            echo "$ls_perms" | grep -q '^......x' && group=$((group + 1))
+            echo "$ls_perms" | grep -q '^......s' && group=$((group + 1))
+
+            # Other permissions (chars 8-10)
+            echo "$ls_perms" | grep -q '^.......r' && other=$((other + 4))
+            echo "$ls_perms" | grep -q '^........w' && other=$((other + 2))
+            echo "$ls_perms" | grep -q '^.........x' && other=$((other + 1))
+            echo "$ls_perms" | grep -q '^.........t' && other=$((other + 1))
+
+            perms="${user}${group}${other}"
+        fi
+    fi
+
+    echo "$perms"
+}
+
 # Function to check and fix file permissions
 check_fix_permissions() {
     local issues_found
@@ -2706,7 +2749,7 @@ check_fix_permissions() {
     if [ -d "${OVPN_PKI}/private" ]; then
         for file in ${OVPN_PKI}/private/*.key; do
             if [ -f "$file" ]; then
-                current_perms=$(stat -c "%a" "$file" 2>/dev/null || stat -f "%Lp" "$file" 2>/dev/null)
+                current_perms=$(get_file_perms "$file")
                 if [ "$current_perms" != "600" ] && [ "$current_perms" != "400" ]; then
                     echo "   [ISSUE] $(basename "$file"): $current_perms (should be 600)"
                     echo "$file|$current_perms|600|Private key - SECURITY RISK if too permissive" >> "$temp_issues"
@@ -2726,7 +2769,7 @@ check_fix_permissions() {
     if [ -d "${OVPN_PKI}/private" ]; then
         for file in ${OVPN_PKI}/private/*.pem; do
             if [ -f "$file" ]; then
-                current_perms=$(stat -c "%a" "$file" 2>/dev/null || stat -f "%Lp" "$file" 2>/dev/null)
+                current_perms=$(get_file_perms "$file")
                 if [ "$current_perms" != "600" ] && [ "$current_perms" != "400" ]; then
                     echo "   [ISSUE] $(basename "$file"): $current_perms (should be 600)"
                     echo "$file|$current_perms|600|TLS-Crypt key - SECURITY RISK if too permissive" >> "$temp_issues"
@@ -2742,7 +2785,7 @@ check_fix_permissions() {
     # Check 3: CA certificate should be 644 (world-readable is OK)
     echo "3. Checking CA certificate..."
     if [ -f "${OVPN_PKI}/ca.crt" ]; then
-        current_perms=$(stat -c "%a" "${OVPN_PKI}/ca.crt" 2>/dev/null || stat -f "%Lp" "${OVPN_PKI}/ca.crt" 2>/dev/null)
+        current_perms=$(get_file_perms "${OVPN_PKI}/ca.crt")
         if [ "$current_perms" != "644" ] && [ "$current_perms" != "600" ] && [ "$current_perms" != "400" ]; then
             echo "   [ISSUE] ca.crt: $current_perms (should be 644)"
             echo "${OVPN_PKI}/ca.crt|$current_perms|644|CA certificate" >> "$temp_issues"
@@ -2758,7 +2801,7 @@ check_fix_permissions() {
     # Check 4: Server certificate should be 644
     echo "4. Checking server certificate..."
     if [ -f "${OVPN_PKI}/issued/server.crt" ]; then
-        current_perms=$(stat -c "%a" "${OVPN_PKI}/issued/server.crt" 2>/dev/null || stat -f "%Lp" "${OVPN_PKI}/issued/server.crt" 2>/dev/null)
+        current_perms=$(get_file_perms "${OVPN_PKI}/issued/server.crt")
         if [ "$current_perms" != "644" ] && [ "$current_perms" != "600" ] && [ "$current_perms" != "400" ]; then
             echo "   [ISSUE] server.crt: $current_perms (should be 644)"
             echo "${OVPN_PKI}/issued/server.crt|$current_perms|644|Server certificate" >> "$temp_issues"
@@ -2774,7 +2817,7 @@ check_fix_permissions() {
     # Check 5: DH parameters should be 644
     echo "5. Checking DH parameters..."
     if [ -f "${OVPN_PKI}/dh.pem" ]; then
-        current_perms=$(stat -c "%a" "${OVPN_PKI}/dh.pem" 2>/dev/null || stat -f "%Lp" "${OVPN_PKI}/dh.pem" 2>/dev/null)
+        current_perms=$(get_file_perms "${OVPN_PKI}/dh.pem")
         if [ "$current_perms" != "644" ] && [ "$current_perms" != "600" ] && [ "$current_perms" != "400" ]; then
             echo "   [ISSUE] dh.pem: $current_perms (should be 644)"
             echo "${OVPN_PKI}/dh.pem|$current_perms|644|DH parameters" >> "$temp_issues"
@@ -2790,7 +2833,7 @@ check_fix_permissions() {
     # Check 6: Server config file
     echo "6. Checking server config file..."
     if [ -f "$OVPN_SERVER_CONF" ]; then
-        current_perms=$(stat -c "%a" "$OVPN_SERVER_CONF" 2>/dev/null || stat -f "%Lp" "$OVPN_SERVER_CONF" 2>/dev/null)
+        current_perms=$(get_file_perms "$OVPN_SERVER_CONF")
         if [ "$current_perms" != "644" ] && [ "$current_perms" != "600" ]; then
             echo "   [ISSUE] $(basename "$OVPN_SERVER_CONF"): $current_perms (should be 644)"
             echo "$OVPN_SERVER_CONF|$current_perms|644|Server config file" >> "$temp_issues"
@@ -2807,7 +2850,7 @@ check_fix_permissions() {
     echo "7. Checking directory permissions..."
     for dir in "${OVPN_PKI}" "${OVPN_PKI}/private" "${OVPN_PKI}/issued" "/etc/openvpn"; do
         if [ -d "$dir" ]; then
-            current_perms=$(stat -c "%a" "$dir" 2>/dev/null || stat -f "%Lp" "$dir" 2>/dev/null)
+            current_perms=$(get_file_perms "$dir")
             # Directories need at least 755 for nobody:nogroup to traverse
             if [ "$current_perms" != "755" ] && [ "$current_perms" != "750" ] && [ "$current_perms" != "700" ]; then
                 echo "   [WARN] $dir: $current_perms (recommend 755 for nobody access)"
