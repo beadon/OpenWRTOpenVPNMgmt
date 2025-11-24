@@ -503,6 +503,26 @@ Restart OpenVPN daemon to apply changes? (y/n): y
 
 Shows expiration status for all certificates.
 
+### Check/Fix File Permissions
+
+**Menu Option: 18**
+
+```
+18) Check/Fix file permissions
+Fix all permission issues now? (yes/no): yes
+```
+
+Verifies and fixes:
+- Private key permissions (600 - CRITICAL for security)
+- Certificate permissions (644)
+- Directory permissions (755)
+- User/group existence (nobody:nogroup)
+
+Run after:
+- Fresh installation
+- System updates
+- If OpenVPN fails to start with permission errors
+
 ## Troubleshooting
 
 ### IPv6 Not Working - VPN Clients Can't Access Internet via IPv6
@@ -643,6 +663,142 @@ curl -6 https://ifconfig.co
 curl -4 https://ifconfig.co
 # Should show VPN server's public IP
 ```
+
+### File Permission Errors - OpenVPN Won't Start
+
+**Problem:** OpenVPN fails to start with "Permission denied" errors in logs.
+
+**Symptoms:**
+- `--status fails with 'openvpn-status.log': Permission denied`
+- `--writepid fails with '/run/openvpn/server.pid': Permission denied`
+- `WARNING: file 'server.key' is group or others accessible`
+- Private keys readable by other users (SECURITY RISK)
+
+**Use the built-in permission checker first:**
+```bash
+# Run from script Menu Option 18
+18) Check/Fix file permissions
+```
+
+This will automatically check and optionally fix all permission issues.
+
+**What the permission checker verifies:**
+
+1. **Private Keys (*.key)** - Must be 600 (owner read/write only)
+   - CRITICAL: Keys with 644/755 permissions are a **SECURITY VULNERABILITY**
+   - Other users can read your private keys!
+
+2. **TLS-Crypt Keys (*.pem)** - Must be 600
+   - Same security concern as private keys
+
+3. **Certificates (*.crt)** - Should be 644 (world-readable is OK)
+   - Public certificates don't need restrictive permissions
+
+4. **DH Parameters (dh.pem)** - Should be 644
+   - Public parameter file, world-readable is fine
+
+5. **Server Config (server.conf)** - Should be 644 or 600
+   - Can be world-readable, but 600 for extra security
+
+6. **Directories** - Should be 755
+   - Allows nobody:nogroup to traverse and access files
+   - Required when OpenVPN runs as unprivileged user
+
+7. **User/Group Existence** - Checks nobody and nogroup exist
+   - Some OpenWrt builds don't have `nogroup`
+   - Use `group nobody` instead if nogroup missing
+
+**Manual fix commands:**
+```bash
+# Fix private key permissions (CRITICAL)
+chmod 600 /etc/easy-rsa/pki/private/*.key
+chmod 600 /etc/easy-rsa/pki/private/*.pem
+
+# Fix certificate permissions
+chmod 644 /etc/easy-rsa/pki/ca.crt
+chmod 644 /etc/easy-rsa/pki/issued/*.crt
+chmod 644 /etc/easy-rsa/pki/dh.pem
+
+# Fix config file
+chmod 644 /etc/openvpn/server.conf
+
+# Fix directory permissions
+chmod 755 /etc/easy-rsa/pki
+chmod 755 /etc/easy-rsa/pki/private
+chmod 755 /etc/easy-rsa/pki/issued
+chmod 755 /etc/openvpn
+```
+
+**Common Permission Issues:**
+
+**Issue 1: OpenVPN runs as nobody:nogroup but files owned by root**
+
+When `server.conf` contains:
+```
+user nobody
+group nogroup
+```
+
+Files must be readable by nobody, or OpenVPN will fail. Solutions:
+
+- **Option A:** Keep files owned by root with world-readable permissions:
+  ```bash
+  chmod 644 /etc/easy-rsa/pki/ca.crt
+  chmod 644 /etc/easy-rsa/pki/dh.pem
+  chmod 755 /etc/easy-rsa/pki
+  ```
+
+- **Option B:** Comment out user/group directives (less secure):
+  ```bash
+  # user nobody
+  # group nogroup
+  ```
+
+- **Option C:** Change ownership (not recommended for security):
+  ```bash
+  chown -R nobody:nogroup /etc/easy-rsa/pki
+  ```
+
+**Issue 2: "nogroup" doesn't exist on OpenWrt**
+
+Error: `failed to find GID for group nogroup`
+
+Fix: Change server.conf to use `nobody` instead:
+```bash
+user nobody
+group nobody  # Changed from nogroup
+```
+
+**Issue 3: Status/PID file permission denied**
+
+Error: `--status fails with '/var/log/openvpn-status.log': Permission denied`
+
+Solutions:
+
+- **Option A:** Use relative path in server.conf:
+  ```
+  status openvpn-status.log  # Writes to /etc/openvpn/
+  ```
+
+- **Option B:** Make /var/log writable by nobody:
+  ```bash
+  chmod 777 /var/log  # Not recommended
+  ```
+
+- **Option C:** Run as root (comment out user/group directives)
+
+**Why Permissions Matter:**
+
+- **600 for private keys:** Prevents other users from reading your encryption keys
+- **644 for certificates:** Allows OpenVPN to read but keeps world-readable (certificates are public)
+- **755 for directories:** Allows traversal by nobody:nogroup user
+- **Running as nobody:** Reduces attack surface if OpenVPN is compromised
+
+**Security Best Practices:**
+- Private keys should NEVER be 644, 664, or 777
+- Use the permission checker (Option 18) after fresh installation
+- Re-check permissions after system updates
+- Keep private keys in /etc/easy-rsa/pki/private with 600 permissions
 
 ### DHCPv6 "No Addresses Available" Error
 

@@ -89,6 +89,12 @@ list_openvpn_instances() {
 
     local found_instances=0
     local instance_list=""
+    local instance_name
+    local enabled
+    local config_file
+    local file_status
+    local enabled_status
+    local running_status
 
     # Iterate through UCI sections
     uci show openvpn 2>/dev/null | grep "=openvpn$" | while IFS='=' read -r section_path section_type; do
@@ -140,6 +146,8 @@ list_openvpn_instances() {
 # Ensure UCI instance exists (create if missing)
 ensure_uci_instance() {
     local instance="$1"
+    local current_config
+    local expected_config
 
     if [ -z "$instance" ]; then
         instance="$OVPN_INSTANCE"
@@ -184,6 +192,12 @@ select_openvpn_instance() {
 
     local instance_count=0
     local instances=""
+    local inst
+    local enabled
+    local status
+    local choice
+    local selected_instance
+    local new_instance
 
     # Get list of instances
     if uci show openvpn >/dev/null 2>&1; then
@@ -375,6 +389,13 @@ check_ipv6_subnet_conflict() {
 
 # Function to detect IPv6 prefix delegation from WAN
 detect_ipv6_prefix() {
+    local WAN6_IF
+    local wan6_addrs
+    local prefix_delegation
+    local prefix_size
+    local lan_ipv6
+    local lan_prefix
+
     echo "Detecting IPv6 configuration from WAN interface..."
     echo ""
 
@@ -462,6 +483,17 @@ detect_ipv6_prefix() {
 
 # Auto-Detect DDNS configured name, Fetch server address configured elsewhere
 auto_detect_fqdn() {
+    local DETECTED_PORT
+    local DETECTED_PROTO
+    local DETECTED_POOL
+    local DETECTED_IPV6_POOL
+    local rule_index
+    local rule_name
+    local rule_dest_port
+    local rule_proto
+    local NET_FQDN
+    local NET_IF
+    local NET_ADDR
 
     echo ""
     echo "Script default settings (if no config found):"
@@ -631,6 +663,14 @@ fi
 
 # Function to configure VPN firewall zones
 configure_vpn_firewall() {
+    local confirm
+    local ipv6_forward
+    local lan_ipv6
+    local wan_ipv6
+    local lan_forward
+    local restart_net
+    local restart
+
     echo ""
     echo "=== Configure VPN Firewall Access ==="
     echo ""
@@ -662,14 +702,32 @@ configure_vpn_firewall() {
     # Create UCI network interface for VPN (makes it visible in LuCI)
     echo "  Creating VPN network interface in UCI..."
 
+    # Verify network UCI config exists
+    if ! uci show network >/dev/null 2>&1; then
+        echo "    ERROR: Network UCI configuration not found"
+        echo "    Your OpenWrt installation may be incomplete"
+        echo "    Cannot create VPN interface in UCI"
+        echo ""
+        return 1
+    fi
+
     # Check if vpn interface already exists
     if ! uci get network.vpn >/dev/null 2>&1; then
-        uci set network.vpn=interface
-        uci set network.vpn.proto='none'
-        uci set network.vpn.device='tun+'
-        uci set network.vpn.auto='1'
-        uci commit network
-        echo "    Created 'vpn' network interface (will show in LuCI Network → Interfaces)"
+        if uci set network.vpn=interface && \
+           uci set network.vpn.proto='none' && \
+           uci set network.vpn.device='tun+' && \
+           uci set network.vpn.auto='1'; then
+            if uci commit network; then
+                echo "    Created 'vpn' network interface (will show in LuCI Network → Interfaces)"
+            else
+                echo "    ERROR: Failed to commit network configuration"
+                return 1
+            fi
+        else
+            echo "    ERROR: Failed to create VPN network interface"
+            echo "    UCI network configuration may be read-only or corrupted"
+            return 1
+        fi
     else
         echo "    VPN network interface already exists"
     fi
@@ -678,15 +736,47 @@ configure_vpn_firewall() {
     uci rename firewall.@zone[0]="lan" 2>/dev/null
     uci rename firewall.@zone[1]="wan" 2>/dev/null
 
+    # Verify LAN zone exists before configuring
+    if ! uci get firewall.lan >/dev/null 2>&1; then
+        echo "  ERROR: LAN firewall zone not found"
+        echo "  Your firewall configuration may not be initialized"
+        echo "  Please configure firewall through LuCI first, then run this script"
+        echo ""
+        uci commit firewall 2>/dev/null
+        return 1
+    fi
+
     # Remove tun+ from LAN zone if it exists, then add it fresh
     uci del_list firewall.lan.device="tun+" 2>/dev/null
-    uci add_list firewall.lan.device="tun+"
+    uci add_list firewall.lan.device="tun+" 2>/dev/null
 
-    echo "  Added tun+ interface to LAN zone"
+    if [ $? -eq 0 ]; then
+        echo "  Added tun+ interface to LAN zone"
+    else
+        echo "  WARNING: Could not add tun+ to LAN zone"
+        echo "  You may need to configure firewall manually"
+    fi
+
+    # Verify WAN zone exists before creating rules
+    if ! uci get firewall.wan >/dev/null 2>&1; then
+        echo "  ERROR: WAN firewall zone not found"
+        echo "  Cannot create OpenVPN firewall rule without WAN zone"
+        echo "  Please ensure firewall is properly configured in LuCI"
+        echo ""
+        uci commit firewall
+        return 1
+    fi
 
     # Delete existing OpenVPN rule if present, then create fresh
     uci -q delete firewall.ovpn
-    uci set firewall.ovpn="rule"
+
+    # Create new OpenVPN firewall rule
+    if ! uci set firewall.ovpn="rule"; then
+        echo "  ERROR: Failed to create OpenVPN firewall rule"
+        echo "  UCI firewall configuration may be corrupted"
+        return 1
+    fi
+
     uci set firewall.ovpn.name="Allow-OpenVPN"
     uci set firewall.ovpn.src="wan"
     uci set firewall.ovpn.dest_port="${OVPN_PORT}"
@@ -718,32 +808,45 @@ configure_vpn_firewall() {
         # Enable IPv6 on LAN zone
         lan_ipv6=$(uci get firewall.lan.ipv6 2>/dev/null)
         if [ "$lan_ipv6" != "1" ]; then
-            uci set firewall.lan.ipv6='1'
-            echo "    Enabled IPv6 on LAN zone"
+            if uci set firewall.lan.ipv6='1'; then
+                echo "    Enabled IPv6 on LAN zone"
+            else
+                echo "    ERROR: Failed to enable IPv6 on LAN zone"
+            fi
         fi
 
         # Enable IPv6 on WAN zone
         wan_ipv6=$(uci get firewall.wan.ipv6 2>/dev/null)
         if [ "$wan_ipv6" != "1" ]; then
-            uci set firewall.wan.ipv6='1'
-            echo "    Enabled IPv6 on WAN zone"
+            if uci set firewall.wan.ipv6='1'; then
+                echo "    Enabled IPv6 on WAN zone"
+            else
+                echo "    ERROR: Failed to enable IPv6 on WAN zone"
+            fi
         fi
 
         # Ensure LAN zone allows IPv6 forwarding
         lan_forward=$(uci get firewall.lan.forward 2>/dev/null)
         if [ "$lan_forward" != "ACCEPT" ]; then
-            uci set firewall.lan.forward='ACCEPT'
-            echo "    Enabled IPv6 forwarding on LAN zone"
+            if uci set firewall.lan.forward='ACCEPT'; then
+                echo "    Enabled IPv6 forwarding on LAN zone"
+            else
+                echo "    ERROR: Failed to enable forwarding on LAN zone"
+            fi
         fi
 
         # Create specific IPv6 forwarding rule from VPN to WAN
         uci -q delete firewall.vpn_ipv6_forward
-        uci set firewall.vpn_ipv6_forward="forwarding"
-        uci set firewall.vpn_ipv6_forward.src="lan"
-        uci set firewall.vpn_ipv6_forward.dest="wan"
-        uci set firewall.vpn_ipv6_forward.family="ipv6"
 
-        echo "    Created IPv6 forwarding rule (VPN → WAN)"
+        if uci set firewall.vpn_ipv6_forward="forwarding"; then
+            uci set firewall.vpn_ipv6_forward.src="lan"
+            uci set firewall.vpn_ipv6_forward.dest="wan"
+            uci set firewall.vpn_ipv6_forward.family="ipv6"
+            echo "    Created IPv6 forwarding rule (VPN → WAN)"
+        else
+            echo "    ERROR: Failed to create IPv6 forwarding rule"
+            echo "    IPv6 routing may not work correctly"
+        fi
 
         echo "  IPv6 firewall configuration complete"
     fi
@@ -917,17 +1020,32 @@ diagnose_ipv6_routing() {
 
 # Function to check if OpenVPN port is open in firewall and VPN zone configuration
 check_firewall() {
+    local vpn_in_lan
+    local lan_devices
+    local port_open
+    local rule_index
+    local rule_name
+    local rule_src
+    local rule_proto
+    local rule_dest_port
+    local rule_target
+    local ipv6_issues
+    local ipv6_forward
+    local lan_ipv6
+    local wan_ipv6
+    local lan_forward
+
     echo ""
     echo "=== Checking Firewall Configuration ==="
     echo ""
-    
+
     # Check if firewall config exists
     if ! uci show firewall >/dev/null 2>&1; then
         echo "WARNING: Cannot access firewall configuration"
         echo "Firewall may not be configured or UCI is not available"
         return 1
     fi
-    
+
     # Check 1: VPN interface in LAN zone
     echo "1. Checking VPN interface configuration..."
     echo ""
@@ -1093,6 +1211,14 @@ check_firewall() {
 
 # Function to generate/update server.conf
 generate_server_conf() {
+    local OVPN_IPV6_SERVER
+    local OVPN_IPV6_CLIENT
+    local OVPN_BW_MBPS
+    local confirm
+    local continue_static
+    local view
+    local restart
+
     echo ""
     echo "=== Generate/Update OpenVPN Server Configuration ==="
     echo ""
@@ -1352,15 +1478,18 @@ EOF
 
 # Function to restore server.conf from backup
 restore_server_conf() {
+    local confirm
+    local restart
+
     echo ""
     echo "=== Restore OpenVPN Server Configuration from Backup ==="
     echo ""
-    
+
     if [ ! -f "$OVPN_SERVER_BACKUP" ]; then
         echo "Error: No backup file found at $OVPN_SERVER_BACKUP"
         return 1
     fi
-    
+
     echo "Backup found: $OVPN_SERVER_BACKUP"
     echo ""
     echo "WARNING: This will restore the server configuration from backup"
@@ -1388,6 +1517,9 @@ restore_server_conf() {
 
 # Function to list all issued clients
 list_clients() {
+    local cert
+    local basename
+
     echo ""
     echo "=== Current OpenVPN Clients ==="
     if [ -d "${OVPN_PKI}/issued" ]; then
@@ -1407,26 +1539,34 @@ list_clients() {
 
 # Function to check certificate expiration dates
 check_expiration() {
+    local current_date
+    local warning_threshold
+    local cert
+    local basename
+    local not_after
+    local exp_date
+    local days_left
+
     echo ""
     echo "=== Certificate Expiration Status ==="
     echo ""
-    
+
     if [ ! -d "${OVPN_PKI}/issued" ]; then
         echo "No issued directory found at ${OVPN_PKI}/issued"
         return 1
     fi
-    
+
     current_date=$(date +%s)
     warning_threshold=$((30 * 24 * 60 * 60))  # 30 days in seconds
-    
+
     for cert in ${OVPN_PKI}/issued/*.crt; do
         if [ -f "$cert" ]; then
             basename=$(basename "$cert" .crt)
-            
+
             # Get expiration date
             not_after=$(openssl x509 -in "$cert" -noout -enddate | cut -d= -f2)
             exp_date=$(date -d "$not_after" +%s 2>/dev/null || date -j -f "%b %d %H:%M:%S %Y %Z" "$not_after" +%s 2>/dev/null)
-            
+
             if [ -n "$exp_date" ]; then
                 days_left=$(( ($exp_date - $current_date) / 86400 ))
                 
@@ -1449,9 +1589,15 @@ check_expiration() {
 
 # Function to show certificate details
 show_cert_details() {
+    local counter
+    local cert
+    local basename
+    local cert_name
+    local cert_path
+
     echo ""
     echo "=== Available Certificates ==="
-    
+
     counter=1
     if [ -d "${OVPN_PKI}/issued" ]; then
         for cert in ${OVPN_PKI}/issued/*.crt; do
@@ -1462,20 +1608,20 @@ show_cert_details() {
             fi
         done
     fi
-    
+
     if [ "$counter" -eq 1 ]; then
         echo "No certificates found."
         return 1
     fi
-    
+
     echo ""
     read -p "Enter certificate name to view details: " cert_name
-    
+
     if [ -z "$cert_name" ]; then
         echo "Error: No certificate name entered"
         return 1
     fi
-    
+
     cert_path="${OVPN_PKI}/issued/${cert_name}.crt"
     
     if [ ! -f "$cert_path" ]; then
@@ -1495,11 +1641,18 @@ show_cert_details() {
 
 # Function to renew a certificate
 renew_certificate() {
+    local counter
+    local cert
+    local basename
+    local cert_name
+    local confirm
+    local regen
+
     echo ""
     echo "=== Renew Certificate ==="
     echo ""
     echo "Available certificates:"
-    
+
     counter=1
     if [ -d "${OVPN_PKI}/issued" ]; then
         for cert in ${OVPN_PKI}/issued/*.crt; do
@@ -1512,25 +1665,25 @@ renew_certificate() {
             fi
         done
     fi
-    
+
     if [ "$counter" -eq 1 ]; then
         echo "No client certificates found to renew."
         return 1
     fi
-    
+
     echo ""
     read -p "Enter certificate name to renew: " cert_name
-    
+
     if [ -z "$cert_name" ]; then
         echo "Error: No certificate name entered"
         return 1
     fi
-    
+
     if [ ! -f "${OVPN_PKI}/issued/${cert_name}.crt" ]; then
         echo "Error: Certificate '$cert_name' not found"
         return 1
     fi
-    
+
     echo ""
     echo "WARNING: This will renew the certificate for: $cert_name"
     echo "The old certificate will be marked as expired."
@@ -1569,26 +1722,31 @@ renew_certificate() {
 
 # Function to generate a single .ovpn file
 generate_single_ovpn() {
-    OVPN_ID="$1"
-    
+    local OVPN_ID="$1"
+    local OVPN_CA
+    local OVPN_TC
+    local OVPN_KEY
+    local OVPN_CERT
+    local OVPN_CONF
+
     if [ -z "$OVPN_ID" ]; then
         echo "Error: No client name provided"
         return 1
     fi
-    
+
     if [ ! -f "${OVPN_PKI}/issued/${OVPN_ID}.crt" ]; then
         echo "Error: Certificate for '$OVPN_ID' not found"
         return 1
     fi
-    
+
     echo "Generating .ovpn file for $OVPN_ID..."
-    
+
     umask go=
     OVPN_CA="$(openssl x509 -in ${OVPN_PKI}/ca.crt)"
     OVPN_TC="$(cat ${OVPN_PKI}/private/${OVPN_ID}.pem)"
     OVPN_KEY="$(cat ${OVPN_PKI}/private/${OVPN_ID}.key)"
     OVPN_CERT="$(openssl x509 -in ${OVPN_PKI}/issued/${OVPN_ID}.crt)"
-    
+
     OVPN_CONF="${OVPN_DIR}/${OVPN_ID}.ovpn"
     
     cat << EOF > ${OVPN_CONF}
@@ -1619,6 +1777,17 @@ EOF
 
 # Function to generate all .ovpn files
 generate_all_ovpn() {
+    local confirm
+    local OVPN_DH
+    local OVPN_CA
+    local cert_file
+    local OVPN_ID
+    local OVPN_CERT
+    local OVPN_EKU
+    local OVPN_TC
+    local OVPN_KEY
+    local OVPN_CONF
+
     echo ""
     echo "=== Generate Client Configuration Files ==="
     echo ""
@@ -1626,23 +1795,23 @@ generate_all_ovpn() {
     echo "Output directory: $OVPN_DIR"
     echo ""
     read -p "Continue? (y/n): " confirm
-    
+
     if [ "$confirm" != "y" ] && [ "$confirm" != "Y" ]; then
         echo "Cancelled."
         return 0
     fi
-    
+
     echo ""
     echo "Generating configuration files..."
     echo ""
-    
+
     umask go=
     OVPN_DH="$(cat ${OVPN_PKI}/dh.pem)"
     OVPN_CA="$(openssl x509 -in ${OVPN_PKI}/ca.crt)"
-    
+
     ls ${OVPN_PKI}/issued/*.crt 2>/dev/null | while read -r cert_file; do
         OVPN_ID=$(basename "$cert_file" .crt)
-        
+
         OVPN_CERT="$(openssl x509 -in ${cert_file})"
         OVPN_EKU="$(echo "${OVPN_CERT}" | openssl x509 -noout -purpose)"
         
@@ -1693,24 +1862,28 @@ EOF
 
 # Function to create new client
 create_client() {
+    local NEW_CLIENT
+    local gen_ovpn
+    local response
+
     read -p "Enter client name: " NEW_CLIENT
-    
+
     if [ -z "$NEW_CLIENT" ]; then
         echo "Error: Client name cannot be empty"
         return 1
     fi
-    
+
     echo "Building new keys for $NEW_CLIENT"
     easyrsa build-client-full $NEW_CLIENT nopass
     openvpn --tls-crypt-v2 ${EASYRSA_PKI}/private/server.pem \
         --genkey tls-crypt-v2-client ${EASYRSA_PKI}/private/$NEW_CLIENT.pem
-    
+
     echo ""
     read -p "Generate .ovpn config file? (y/n): " gen_ovpn
     if [ "$gen_ovpn" = "y" ] || [ "$gen_ovpn" = "Y" ]; then
         generate_single_ovpn "$NEW_CLIENT"
     fi
-    
+
     echo ""
     read -t 10 -p "OpenVPN Daemon restart. 10s timeout. Continue? (y/n): " response
     if [ "$response" = "y" ] || [ "$response" = "Y" ]; then
@@ -1724,9 +1897,16 @@ create_client() {
 
 # Function to revoke a client
 revoke_client() {
+    local counter
+    local cert
+    local basename
+    local CLIENT_TO_REVOKE
+    local confirm
+    local response
+
     echo ""
     echo "=== Available Clients to Revoke ==="
-    
+
     counter=1
     if [ -d "${OVPN_PKI}/issued" ]; then
         for cert in ${OVPN_PKI}/issued/*.crt; do
@@ -1739,25 +1919,25 @@ revoke_client() {
             fi
         done
     fi
-    
+
     if [ "$counter" -eq 1 ]; then
         echo "No clients found to revoke."
         return 1
     fi
-    
+
     echo ""
     read -p "Enter client name to revoke: " CLIENT_TO_REVOKE
-    
+
     if [ -z "$CLIENT_TO_REVOKE" ]; then
         echo "Error: No client name entered"
         return 1
     fi
-    
+
     if [ ! -f "${OVPN_PKI}/issued/${CLIENT_TO_REVOKE}.crt" ]; then
         echo "Error: Client '$CLIENT_TO_REVOKE' not found in issued certificates"
         return 1
     fi
-    
+
     echo ""
     echo "WARNING: You are about to revoke certificate for: $CLIENT_TO_REVOKE"
     read -p "Are you sure? (yes/no): " confirm
@@ -1793,6 +1973,13 @@ revoke_client() {
 
 # Function to monitor VPN address usage (IPv4 and IPv6)
 monitor_vpn_usage() {
+    local instance_count
+    local instances
+    local inst
+    local status
+    local choice
+    local selected_instance
+
     echo ""
     echo "=== VPN Address Usage Monitor ==="
     echo ""
@@ -1807,8 +1994,8 @@ monitor_vpn_usage() {
     echo "Available OpenVPN instances:"
     echo ""
 
-    local instance_count=0
-    local instances=""
+    instance_count=0
+    instances=""
 
     if uci show openvpn >/dev/null 2>&1; then
         instances=$(uci show openvpn 2>/dev/null | grep "=openvpn$" | cut -d'.' -f2 | cut -d'=' -f1)
@@ -1839,7 +2026,7 @@ monitor_vpn_usage() {
 
     read -p "Select instance to monitor: " choice
 
-    local selected_instance=""
+    selected_instance=""
 
     case "$choice" in
         [0-9]*)
@@ -1884,6 +2071,29 @@ monitor_vpn_usage() {
 # Helper function to monitor a single instance
 monitor_single_instance() {
     local instance="$1"
+    local tun_interfaces
+    local tun_if
+    local ipv4_addrs
+    local pool_network
+    local pool_prefix
+    local max_hosts
+    local ipv4_neighbors
+    local remaining
+    local neighbors
+    local ipv6_addrs
+    local addr_count
+    local openvpn_pid
+    local total_clients
+    local line
+    local client_name
+    local real_addr
+    local virtual_ipv4
+    local virtual_ipv6
+    local bytes_recv
+    local bytes_sent
+    local connected_since
+    local bytes_recv_mb
+    local bytes_sent_mb
 
     echo "=================================================="
     echo "Monitoring Instance: $instance"
@@ -2068,6 +2278,16 @@ monitor_single_instance() {
 
 # Function to toggle IPv6 configuration
 toggle_ipv6() {
+    local ipv6_option
+    local new_mode
+    local check
+    local confirm_dhcpv6
+    local new_ipv6_pool
+    local new_size
+    local confirm
+    local mode_choice
+    local confirm_conflict
+
     echo ""
     echo "=== IPv6 Configuration ==="
     echo ""
@@ -2288,6 +2508,10 @@ toggle_ipv6() {
 
 # Function to configure performance settings
 configure_performance() {
+    local OVPN_BW_MBPS
+    local perf_option
+    local new_limit
+
     echo ""
     echo "=== Performance Configuration ==="
     echo ""
@@ -2382,6 +2606,8 @@ key_management_first_time() {
 
 # Function to install LuCI OpenVPN web interface
 install_luci_openvpn() {
+    local confirm
+
     echo ""
     echo "=== Install LuCI OpenVPN Web Interface ==="
     echo ""
@@ -2436,6 +2662,257 @@ install_luci_openvpn() {
     echo ""
 }
 
+# Function to check and fix file permissions
+check_fix_permissions() {
+    local issues_found
+    local total_issues
+    local current_perms
+    local file
+    local dir
+    local fix_all
+    local check_type
+    local expected_perms
+    local actual_perms
+    local temp_issues
+    local counter
+    local filepath
+    local current
+    local expected
+    local description
+
+    echo ""
+    echo "=== OpenVPN File Permissions Check ==="
+    echo ""
+    echo "This will check permissions on PKI files, certificates, keys, and directories."
+    echo "Incorrect permissions can cause OpenVPN to fail or create security vulnerabilities."
+    echo ""
+
+    issues_found=0
+    total_issues=0
+
+    # Check if PKI directory exists
+    if [ ! -d "${OVPN_PKI}" ]; then
+        echo "WARNING: PKI directory not found at ${OVPN_PKI}"
+        echo "Run 'Install and initialize EasyRSA' (option 12) first"
+        echo ""
+        return 1
+    fi
+
+    echo "Checking permissions..."
+    echo ""
+
+    # Create temp file to store issues for batch fixing
+    local temp_issues="/tmp/openvpn_perm_issues_$$"
+    > "$temp_issues"  # Clear/create temp file
+
+    # Check 1: Private keys must be 600 (CRITICAL SECURITY)
+    echo "1. Checking private keys (*.key files)..."
+    if [ -d "${OVPN_PKI}/private" ]; then
+        for file in ${OVPN_PKI}/private/*.key; do
+            if [ -f "$file" ]; then
+                current_perms=$(stat -c "%a" "$file" 2>/dev/null || stat -f "%Lp" "$file" 2>/dev/null)
+                if [ "$current_perms" != "600" ] && [ "$current_perms" != "400" ]; then
+                    echo "   [ISSUE] $(basename "$file"): $current_perms (should be 600)"
+                    echo "$file|$current_perms|600|Private key - SECURITY RISK if too permissive" >> "$temp_issues"
+                    issues_found=$((issues_found + 1))
+                else
+                    echo "   [OK] $(basename "$file"): $current_perms"
+                fi
+            fi
+        done
+    else
+        echo "   [SKIP] Private key directory not found"
+    fi
+    echo ""
+
+    # Check 2: tls-crypt-v2 keys must be 600
+    echo "2. Checking tls-crypt-v2 keys (*.pem files)..."
+    if [ -d "${OVPN_PKI}/private" ]; then
+        for file in ${OVPN_PKI}/private/*.pem; do
+            if [ -f "$file" ]; then
+                current_perms=$(stat -c "%a" "$file" 2>/dev/null || stat -f "%Lp" "$file" 2>/dev/null)
+                if [ "$current_perms" != "600" ] && [ "$current_perms" != "400" ]; then
+                    echo "   [ISSUE] $(basename "$file"): $current_perms (should be 600)"
+                    echo "$file|$current_perms|600|TLS-Crypt key - SECURITY RISK if too permissive" >> "$temp_issues"
+                    issues_found=$((issues_found + 1))
+                else
+                    echo "   [OK] $(basename "$file"): $current_perms"
+                fi
+            fi
+        done
+    fi
+    echo ""
+
+    # Check 3: CA certificate should be 644 (world-readable is OK)
+    echo "3. Checking CA certificate..."
+    if [ -f "${OVPN_PKI}/ca.crt" ]; then
+        current_perms=$(stat -c "%a" "${OVPN_PKI}/ca.crt" 2>/dev/null || stat -f "%Lp" "${OVPN_PKI}/ca.crt" 2>/dev/null)
+        if [ "$current_perms" != "644" ] && [ "$current_perms" != "600" ] && [ "$current_perms" != "400" ]; then
+            echo "   [ISSUE] ca.crt: $current_perms (should be 644)"
+            echo "${OVPN_PKI}/ca.crt|$current_perms|644|CA certificate" >> "$temp_issues"
+            issues_found=$((issues_found + 1))
+        else
+            echo "   [OK] ca.crt: $current_perms"
+        fi
+    else
+        echo "   [SKIP] CA certificate not found"
+    fi
+    echo ""
+
+    # Check 4: Server certificate should be 644
+    echo "4. Checking server certificate..."
+    if [ -f "${OVPN_PKI}/issued/server.crt" ]; then
+        current_perms=$(stat -c "%a" "${OVPN_PKI}/issued/server.crt" 2>/dev/null || stat -f "%Lp" "${OVPN_PKI}/issued/server.crt" 2>/dev/null)
+        if [ "$current_perms" != "644" ] && [ "$current_perms" != "600" ] && [ "$current_perms" != "400" ]; then
+            echo "   [ISSUE] server.crt: $current_perms (should be 644)"
+            echo "${OVPN_PKI}/issued/server.crt|$current_perms|644|Server certificate" >> "$temp_issues"
+            issues_found=$((issues_found + 1))
+        else
+            echo "   [OK] server.crt: $current_perms"
+        fi
+    else
+        echo "   [SKIP] Server certificate not found"
+    fi
+    echo ""
+
+    # Check 5: DH parameters should be 644
+    echo "5. Checking DH parameters..."
+    if [ -f "${OVPN_PKI}/dh.pem" ]; then
+        current_perms=$(stat -c "%a" "${OVPN_PKI}/dh.pem" 2>/dev/null || stat -f "%Lp" "${OVPN_PKI}/dh.pem" 2>/dev/null)
+        if [ "$current_perms" != "644" ] && [ "$current_perms" != "600" ] && [ "$current_perms" != "400" ]; then
+            echo "   [ISSUE] dh.pem: $current_perms (should be 644)"
+            echo "${OVPN_PKI}/dh.pem|$current_perms|644|DH parameters" >> "$temp_issues"
+            issues_found=$((issues_found + 1))
+        else
+            echo "   [OK] dh.pem: $current_perms"
+        fi
+    else
+        echo "   [SKIP] DH parameters not found"
+    fi
+    echo ""
+
+    # Check 6: Server config file
+    echo "6. Checking server config file..."
+    if [ -f "$OVPN_SERVER_CONF" ]; then
+        current_perms=$(stat -c "%a" "$OVPN_SERVER_CONF" 2>/dev/null || stat -f "%Lp" "$OVPN_SERVER_CONF" 2>/dev/null)
+        if [ "$current_perms" != "644" ] && [ "$current_perms" != "600" ]; then
+            echo "   [ISSUE] $(basename "$OVPN_SERVER_CONF"): $current_perms (should be 644)"
+            echo "$OVPN_SERVER_CONF|$current_perms|644|Server config file" >> "$temp_issues"
+            issues_found=$((issues_found + 1))
+        else
+            echo "   [OK] $(basename "$OVPN_SERVER_CONF"): $current_perms"
+        fi
+    else
+        echo "   [SKIP] Server config not found"
+    fi
+    echo ""
+
+    # Check 7: Directory permissions (must be traversable)
+    echo "7. Checking directory permissions..."
+    for dir in "${OVPN_PKI}" "${OVPN_PKI}/private" "${OVPN_PKI}/issued" "/etc/openvpn"; do
+        if [ -d "$dir" ]; then
+            current_perms=$(stat -c "%a" "$dir" 2>/dev/null || stat -f "%Lp" "$dir" 2>/dev/null)
+            # Directories need at least 755 for nobody:nogroup to traverse
+            if [ "$current_perms" != "755" ] && [ "$current_perms" != "750" ] && [ "$current_perms" != "700" ]; then
+                echo "   [WARN] $dir: $current_perms (recommend 755 for nobody access)"
+                echo "$dir|$current_perms|755|Directory - needs traversal permissions" >> "$temp_issues"
+                issues_found=$((issues_found + 1))
+            else
+                # Check if it's 700 which might block nobody:nogroup
+                if [ "$current_perms" = "700" ]; then
+                    echo "   [WARN] $dir: $current_perms (may block nobody:nogroup access)"
+                else
+                    echo "   [OK] $dir: $current_perms"
+                fi
+            fi
+        fi
+    done
+    echo ""
+
+    # Check 8: Log directory writability for nobody:nogroup
+    echo "8. Checking log/run directories for nobody:nogroup access..."
+    echo "   Note: Required if OpenVPN runs as 'user nobody / group nogroup'"
+    echo ""
+
+    # Check if nobody user exists
+    if id nobody >/dev/null 2>&1; then
+        echo "   [OK] User 'nobody' exists"
+    else
+        echo "   [WARN] User 'nobody' does not exist"
+    fi
+
+    # Check if nogroup exists
+    if getent group nogroup >/dev/null 2>&1 || grep -q "^nogroup:" /etc/group 2>/dev/null; then
+        echo "   [OK] Group 'nogroup' exists"
+    else
+        echo "   [WARN] Group 'nogroup' does not exist"
+        echo "          Consider using 'group nobody' instead in server.conf"
+    fi
+    echo ""
+
+    # Summary
+    total_issues=$(wc -l < "$temp_issues" 2>/dev/null || echo "0")
+    echo "=========================================="
+    if [ "$total_issues" -eq 0 ]; then
+        echo "RESULT: All permissions are correctly set!"
+        echo ""
+        echo "Your OpenVPN installation should not have permission-related issues."
+    else
+        echo "RESULT: Found $total_issues permission issue(s)"
+        echo ""
+        echo "Issues found:"
+        local counter=1
+        while IFS='|' read -r filepath current expected description; do
+            echo "  $counter. $filepath"
+            echo "     Current: $current | Expected: $expected"
+            echo "     Type: $description"
+            counter=$((counter + 1))
+        done < "$temp_issues"
+        echo ""
+        echo "These issues may cause:"
+        echo "  - OpenVPN to fail to start"
+        echo "  - 'Permission denied' errors in logs"
+        echo "  - Security vulnerabilities (if private keys are too permissive)"
+        echo ""
+
+        read -p "Fix all permission issues now? (yes/no): " fix_all
+
+        if [ "$fix_all" = "yes" ]; then
+            echo ""
+            echo "Fixing permissions..."
+            while IFS='|' read -r filepath current expected description; do
+                if chmod "$expected" "$filepath" 2>/dev/null; then
+                    echo "  [FIXED] $filepath -> $expected"
+                else
+                    echo "  [FAILED] Could not change permissions on $filepath"
+                fi
+            done < "$temp_issues"
+            echo ""
+            echo "Permission fixes applied!"
+            echo ""
+            echo "IMPORTANT: If OpenVPN runs as 'user nobody', also ensure:"
+            echo "  - /var/log is writable by nobody (or use relative status path)"
+            echo "  - /var/run is writable by nobody (or disable --writepid)"
+            echo "  - Or comment out 'user nobody' and 'group nogroup' in server.conf"
+        else
+            echo "No changes made."
+            echo ""
+            echo "To fix manually, run these commands:"
+            while IFS='|' read -r filepath current expected description; do
+                echo "  chmod $expected $filepath"
+            done < "$temp_issues"
+        fi
+    fi
+    echo "=========================================="
+    echo ""
+
+    # Cleanup temp file
+    rm -f "$temp_issues"
+}
+
+# Clear terminal at startup for clean display
+reset
+
 # Main menu
 while true; do
     echo ""
@@ -2480,8 +2957,9 @@ while true; do
     echo ""
     echo "Diagnostics:"
     echo " 17) Diagnose IPv6 routing issues"
+    echo " 18) Check/Fix file permissions"
     echo ""
-    echo " 18) Exit"
+    echo " 19) Exit"
     echo ""
     read -p "Select an option: " choice
     
@@ -2570,6 +3048,10 @@ while true; do
             read -p "Press Enter to continue..."
             ;;
         18)
+            check_fix_permissions
+            read -p "Press Enter to continue..."
+            ;;
+        19)
             echo "Exiting..."
             exit 0
             ;;
