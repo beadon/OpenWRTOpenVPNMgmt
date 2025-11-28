@@ -1,15 +1,33 @@
 #!/bin/sh
-################################################################################
+###############################################################################
+#                               LICENSE
+# Copyright (C) 2025 Bryant Eadon
+#
+# This program is free software; you can redistribute it and/or
+# modify it under the terms of the GNU General Public License
+# as published by the Free Software Foundation; either version 2
+# of the License, or (at your option) any later version.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with this program; if not, see
+# <https://www.gnu.org/licenses/>.
+###############################################################################
+###############################################################################
 #                   OpenWRT OpenVPN Server Management Script                  #
-#                                                                              #
-#  Version: v2.5                                                               #
+#                                                                             #
+#  Version: v2.5                                                              #
 #  Repository: https://github.com/beadon/OpenWRTOpenVPNMgmt                   #
-#                                                                              #
+#                                                                             #
 #  All-in-one OpenVPN server management for OpenWrt                           #
 #  - Certificate management, client configs, server control                   #
 #  - Safe restart with connection awareness and scheduling                    #
 #  - IPv6 support, firewall configuration, monitoring                         #
-################################################################################
+###############################################################################
 
 SCRIPT_VERSION="v2.5"
 
@@ -25,7 +43,7 @@ OVPN_INSTANCE="server"
 OVPN_SERV="vpn.example.com"              # Your VPN server address (FQDN or IP)
 OVPN_PORT="1194"                         # VPN port
 OVPN_PROTO="udp"                         # Protocol: udp or tcp
-OVPN_POOL="10.8.0.0 255.255.255.0"      # VPN IPv4 subnet and netmask
+OVPN_POOL="10.8.0.0 255.255.255.0"       # VPN IPv4 subnet and netmask
 
 # IPv6 Configuration
 OVPN_IPV6_ENABLE="no"                    # Enable IPv6: yes or no
