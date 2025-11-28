@@ -10,15 +10,15 @@ Tired of managing keys, ovpn files and all different parts piecemeal? Use this s
 
 # Table of Contents
 
-- [⚠️ Disclaimers :warning:](#️-disclaimers)
+- [⚠️ Disclaimer ⚠️](#️-disclaimer)
 - [What's New in v2.5](#whats-new-in-v25)
 - [Getting Started](#getting-started)
   - [Installation](#installation)
   - [Configuration](#configuration)
-    - [Step 1: Install the VPN WebUI (Optional)](#step-1-install-the-vpn-webui-optional)
+    - [Step 1: Install the VPN WebUI (Optional)](#step-1-optional-install-the-vpn-webui)
     - [Step 2: Install and Initialize EasyRSA](#step-2-install-and-initialize-easyrsa)
     - [Step 3: Auto-Detect Server Settings](#step-3-auto-detect-server-settings)
-    - [Step 4: Configure IPv6 (Advanced/Optional)](#step-4-configure-ipv6-advancedoptional)
+    - [Step 4: Configure IPv6 (Advanced/Optional)](#step-4-optional---advanced-users-configure-ipv6)
       - [Step 4.5 Configure Performance Settings Optional](#step-45-configure-performance-settings-optional)
     - [Step 5: Generate Server Configuration](#step-5-generate-server-configuration)
     - [Step 6: Configure Firewall](#step-6-configure-firewall)
@@ -28,16 +28,16 @@ Tired of managing keys, ovpn files and all different parts piecemeal? Use this s
     - [Step 10: Connect Your Client](#step-10-connect-your-client)
 - [Features](#features)
   - [UCI Management Integration](#uci-management-integration)
-  - [Instance Selection](#instance-selection)
+  - [Instance Selection](#instance-selection-menu-options-i-and-l)
   - [LuCI Integration](#luci-integration)
   - [Viewing VPN Tunnel in LuCI](#viewing-vpn-tunnel-in-luci)
   - [OpenVPN Monitoring](#openvpn-monitoring)
   - [Instance-Aware Operations](#instance-aware-operations)
   - [Quick Reference - Common Operations](#quick-reference---common-operations)
 - [Troubleshooting](#troubleshooting)
-  - [IPv6 Not Working](#ipv6-not-working)
-  - [IPv6 Traffic Leaking Outside Tunnel](#ipv6-traffic-leaking-outside-tunnel)
-  - [File Permission Errors](#file-permission-errors)
+  - [IPv6 Not Working](#ipv6-not-working---vpn-clients-cant-access-internet-via-ipv6)
+  - [IPv6 Traffic Leaking Outside Tunnel](#ipv6-traffic-leaking-outside-vpn-tunnel)
+  - [File Permission Errors](#file-permission-errors---openvpn-wont-start)
   - [DHCPv6 “No Addresses Available” Error](#dhcpv6-no-addresses-available-error)
   - [Clients Can't Connect](#clients-cant-connect)
   - [OpenVPN Doesn't Start After Reboot](#openvpn-doesnt-start-after-reboot)
@@ -46,44 +46,26 @@ Tired of managing keys, ovpn files and all different parts piecemeal? Use this s
   - [Multiple Server Instances](#multiple-server-instances)
   - [Custom Configuration](#custom-configuration)
 - [IPv6 VPN Tunnel Setup](#ipv6-vpn-tunnel-setup)
-  - [Critical: IPv6 Leak Warning](#critical-ipv6-leak-warning)
+  - [⚠️ IPv6 Leak Warning](#critical-ipv6-traffic-leak-warning)
   - [Solutions to Prevent IPv6 Leaks](#solutions-to-prevent-ipv6-leaks)
   - [Why Enable IPv6](#why-enable-ipv6)
   - [IPv6 Configuration Options](#ipv6-configuration-options)
   - [What Gets Configured](#what-gets-configured)
   - [Firewall Configuration](#firewall-configuration)
   - [Verifying IPv6 Configuration](#verifying-ipv6-configuration)
-  - [Common IPv6 Issues](#common-ipv6-issues)
+  - [Common IPv6 Issues And Solutions](#common-ipv6-issues-and-solutions)
   - [IPv6 Address Pool Management](#ipv6-address-pool-management)
-  - [DHCPv6 Mode (Advanced)](#dhcpv6-mode-advanced)
+  - [DHCPv6 Mode (Advanced)](#advanced-dhcpv6-mode-not-recommended-for-most-users)
 
 ---
 
-> ## ⚠️ DISCLAIMERS
-> 1. Tested on OpenWRT v24.10.4 . Theoretically it should work for any *release* above v20.x.x provided by git.openwrt.org.
->    Any version below that is NOT SUPPORTED.
->
->
-> 2. The author (and their contributors) are NOT responsable for the misuse of this tool!
->    Using this tools to attempt hiding your traffic from ISP's Deep Packet Inspection is not considered illegal However, you must comply with the ISP's ToS to avoid yourself from getting fined (or jailed).
->    Engaging in hacking warfare is considered a misuse of this tool.
->
->
-> 4. Friendly reminder to Linux users that Linux distros are NOT inherently "more secure":
-> - xz-utils backdoor affected Fedora 42
-> - Xubuntu download page was compromised earlier this year
-> - Arch User Repository was under attack too
->
-> DONT panic tho. This is normal(n't);
-> - iOS had a bug that let users see deleted files
-> - Windows was always riddled with decades-old bugs
->
-> What you CAN do instead is follow five simple rules:
-> 1. Never access sus URLs
-> 2. Never download sus "compiled/compressed" files
-> 3. Never install unnecessary apps (you **will** do those "trade-offs" sooner or later)
-> 4. Never update the second a new version of an APP or OS was published. Delay the update by atleast 1 week.
-> 5. Never use the latest OS release! Unless critical bugs occured (i.e. Fedora 42 was hacked), the golden rule of thumb is to be ONE *major* version behind.
+> ## ⚠️ DISCLAIMER
+> 1. Tested on OpenWRT v24.10.4 .
+>    Older versions may behave unexpectedly.
+>    Theoretically, it should work for any *release* since v20.x.x provided by https://git.openwrt.org .
+> 
+> 2. This project is provided “as-is”, without guarantee. Users are responsible for ensuring the configuration, compatibility and security according to their own environment and use case.
+>    Use at your own discretion.
 > 
 
 ## What's New in v2.5
@@ -119,7 +101,6 @@ chmod 775 openvpn_server_management.sh
 Aaand- done!
 The script will auto-create the default instance "server" on first run.
 
-### [**🔼 BACK TO TOP 🔼**](#openwrt-openvpn-server-management)
 
 ## Configuration
 ### Step 1: (Optional) Install the VPN WebUI
@@ -138,7 +119,6 @@ This will provide:
 
 **Access:** Web Interface → Services → OpenVPN (or System → OpenVPN)
 > **Note:** Changes made in LuCI and this script are synchronized via UCI.
-### [**🔼 BACK TO TOP 🔼**](#openwrt-openvpn-server-management)
 
 ### Step 2: Install and Initialize EasyRSA
 
@@ -155,7 +135,6 @@ This will:
 - Create TLS-Crypt key
 
 > **Note:** This step takes several minutes due to cryptographic key generation.
-### [**🔼 BACK TO TOP 🔼**](#openwrt-openvpn-server-management)
 
 ### Step 3: Auto-Detect Server Settings
 
@@ -186,7 +165,6 @@ You can also set up DDNS hostname for your VPN server. Advantages include:
 4. Run this script's auto-detect (Option 0) - it will automatically use your DDNS hostname
 
 If DDNS is not configured, the script will fall back to using your current WAN IP address.
-### [**🔼 BACK TO TOP 🔼**](#openwrt-openvpn-server-management)
 
 ### Step 4: (Optional - Advanced Users) Configure IPv6
 
@@ -211,7 +189,6 @@ Enter max clients limit (default 253): 100
 **IPv6 Subnet Options:**
 - **Globally routable:** Use a /64 from your ISP's delegation (detected in Step 3)
 - **Private ULA:** Generate at https://unique-local-ipv6.com/
-### [**🔼 BACK TO TOP 🔼**](#openwrt-openvpn-server-management)
 
 ### Step 4.5: Configure Performance Settings (Optional)
 
@@ -281,7 +258,6 @@ Enter bandwidth limit in bytes per second:
 - **Stability:** Reduce load on CPU-limited routers
 
 **Note:** The `shaper` directive applies to outgoing traffic from the server. For more advanced per-client bandwidth control, consider using Traffic Control (tc) scripts.
-### [**🔼 BACK TO TOP 🔼**](#openwrt-openvpn-server-management)
 
 ### Step 5: Generate Server Configuration
 
@@ -303,7 +279,6 @@ This creates `/etc/openvpn/server.conf` with:
 **UCI Integration:** Automatically updates `/etc/config/openvpn` with the instance configuration.
 
 **Autostart Configuration:** The script automatically enables the OpenVPN service to start on router boot by running `/etc/init.d/openvpn enable`. This ensures your VPN server starts automatically after power cycles or reboots.
-### [**🔼 BACK TO TOP 🔼**](#openwrt-openvpn-server-management)
 
 ### Step 6: Configure Firewall
 
@@ -354,7 +329,6 @@ Restart firewall to apply changes? (y/n): y
 - IPv6 forwarding enabled (if IPv6 is enabled)
 - IPv6 zones properly configured
 - IPv6 forwarding rules exist
-### [**🔼 BACK TO TOP 🔼**](#openwrt-openvpn-server-management)
 
 ### Step 7: Restart OpenVPN
 
@@ -368,7 +342,6 @@ Or manually:
 ```bash
 /etc/init.d/openvpn restart server
 ```
-### [**🔼 BACK TO TOP 🔼**](#openwrt-openvpn-server-management)
 
 ### Step 8: Create Your First Client Certificate
 
@@ -401,7 +374,6 @@ This can be arranged any way you like, consider a naming scheme like:
 - Private key: `/etc/easy-rsa/pki/private/bill.laptop.key`
 - TLS-Crypt key: `/etc/easy-rsa/pki/private/bill.laptop.pem`
 - Client config: `/root/ovpn_config_out/bill.laptop.ovpn`
-### [**🔼 BACK TO TOP 🔼**](#openwrt-openvpn-server-management)
 
 ### Step 9: Download Client Configuration
 
@@ -418,22 +390,10 @@ scp root@192.168.1.1:/root/ovpn_config_out/bill.laptop.ovpn ~/Downloads/
 NOTE: file browser is installable as ```opkg install luci-app-filemanager```
 
 1. Navigate to System → File Browser (if available)
-### [**🔼 BACK TO TOP 🔼**](#openwrt-openvpn-server-management)
 
 ### Step 10: Connect Your Client
 
-OpenVPN officially supports the following platforms:
-- Windows 10 or later
-- Linux
-  - Debian 11 or later
-  - Fedora 42 or later (41 was affected by xz-utils backdoor)
-  - RHEL and compatible derivates (AlmaLinux, Rocky Linux, Oracle Linux, CentOS Stream, ...) 8 or later
-  - Ubuntu 18.04 LTS or later
-- MacOS 11.7.10 (Big Sur) or later
-- iOS 
-- Android 10 or later
-- ChromeOS 70 or later
-
+OpenVPN officially supports the following platforms: Windows, Linux, MacOSX, iOS, Android, ChromeOS
 
 > **Notes:**
 > - Android/iOS: The re-use of the laptop key here will cause connection problems for the user, issue them a second client key in line with your key issuing naming convention (see above).
@@ -453,7 +413,6 @@ curl -6 ifconfig.co     # Check IPv6 address (if enabled)
 ```
 
 Once the client (PC, mobile) establishes the connection with your VPN server, open a web browser and check through an IP lookup service (for example the [What Is My IP?](https://www.whatismyip.com/)) if it reflect's the OpenVPN server's IP. 
-### [**🔼 BACK TO TOP 🔼**](#openwrt-openvpn-server-management)
 
 # FEATURES
 
@@ -541,7 +500,6 @@ After running **Menu Option 15** (Configure VPN firewall access), the VPN tunnel
     ├── office_vpn.conf        # Example: additional instance
     └── *.conf                 # Instance configs
 ```
-### [**🔼 BACK TO TOP 🔼**](#openwrt-openvpn-server-management)
 
 ## Quick Reference - Common Operations
 
@@ -705,7 +663,6 @@ Safe restart with connection checking is automatically used in:
 - After restoring configuration from backup (Menu Option 2)
 - After creating new client certificates (Menu Option 4)
 - After revoking client certificates (Menu Option 6)
-### [**🔼 BACK TO TOP 🔼**](#openwrt-openvpn-server-management)
 
 ## Troubleshooting
 
@@ -1152,7 +1109,6 @@ OVPN_POOL="10.8.0.0 255.255.255.0"  # IPv4 VPN subnet
 OVPN_IPV6_POOL="fd42:4242:4242:1194::/64"  # IPv6 VPN subnet
 OVPN_IPV6_POOL_SIZE="253"     # Max clients
 ```
-### [**🔼 BACK TO TOP 🔼**](#openwrt-openvpn-server-management)
 
 
 # IPv6 VPN Tunnel Setup
@@ -1643,11 +1599,6 @@ logread | grep "odhcpd.*vpn"
 - Works even if odhcpd fails
 
 **For 99% of users, static mode provides everything needed without the complexity.**
-### [**🔼 BACK TO TOP 🔼**](#openwrt-openvpn-server-management)
-
----
-
-Copyright (C)2025 Bryant Eadon ([@beadon](https://github.com/beadon) on [GitHub](https://github.com))
 
 This program is free software; you can redistribute it and/or modify
 it under the terms of the GNU General Public License version 2.
