@@ -124,6 +124,14 @@ docker build -t openwrt-test ./docker
 shellspec spec/integration/
 ```
 
+### GitHub Actions CI Workflow - PENDING
+Create `.github/workflows/test.yml` with:
+- **unit-tests job**: Run on ubuntu-latest with busybox ash, execute `spec/unit/`
+- **integration-tests job**: Build OpenWRT Docker container, install dependencies, run `spec/integration/`
+- **shellcheck job**: Lint script with ShellCheck for POSIX compliance
+- Trigger on push/PR to main and dev branches
+- Integration tests timeout: 30 minutes (PKI generation is slow)
+
 ---
 
 ## Testing Environment

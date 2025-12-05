@@ -3579,6 +3579,12 @@ check_fix_permissions() {
     # Temp file cleaned up automatically by trap
 }
 
+# Test guard: skip main menu when sourced for testing
+# Usage: SHELLSPEC_TESTING=true . ./openvpn_server_management.sh
+if [ "${SHELLSPEC_TESTING:-}" = "true" ]; then
+    return 0 2>/dev/null || exit 0
+fi
+
 # Clear terminal at startup for clean display
 reset
 
