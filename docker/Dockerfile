@@ -24,23 +24,16 @@ RUN [ -f /setup.sh ] && /setup.sh || true
 # Create /var/lock for opkg (required per OpenWRT Docker docs)
 RUN mkdir -p /var/lock
 
-# Update package lists and install minimal packages for SSH access
-RUN opkg update && opkg install \
-    openssh-server \
-    openssh-sftp-server \
-    && rm -rf /var/opkg-lists/*
+# Update package lists
+RUN opkg update && rm -rf /var/opkg-lists/*
 
-# Configure SSH
-RUN mkdir -p /etc/ssh /root/.ssh && \
+# Configure SSH authorized key
+RUN mkdir -p /etc/dropbear /root/.ssh && \
     chmod 700 /root/.ssh && \
-    ssh-keygen -A
+    echo "$SSH_PUBLIC_KEY" > /etc/dropbear/authorized_keys && \
+    chmod 600 /etc/dropbear/authorized_keys
 
-# Add the SSH public key for passwordless access
-RUN echo "$SSH_PUBLIC_KEY" > /root/.ssh/authorized_keys && \
-    chmod 600 /root/.ssh/authorized_keys
-
-# Set root password to 'admin' using sed on /etc/shadow
-# Password hash generated with: openssl passwd -1 admin
+# Set root password to 'admin'
 RUN sed -i 's|^root::|root:$1$xyz$a0528HhbLOUB8xGVmyhEq/:|' /etc/shadow
 
 # Expose SSH port
