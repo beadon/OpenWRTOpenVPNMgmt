@@ -39,8 +39,9 @@ RUN mkdir -p /etc/ssh /root/.ssh && \
 RUN echo "$SSH_PUBLIC_KEY" > /root/.ssh/authorized_keys && \
     chmod 600 /root/.ssh/authorized_keys
 
-# Set root password to 'admin'
-RUN echo 'root:admin' | chpasswd
+# Set root password to 'admin' using sed on /etc/shadow
+# Password hash generated with: openssl passwd -1 admin
+RUN sed -i 's|^root::|root:$1$xyz$a0528HhbLOUB8xGVmyhEq/:|' /etc/shadow
 
 # Expose SSH port
 EXPOSE 22
