@@ -18,8 +18,8 @@ FROM openwrt/rootfs:x86-64-openwrt-23.05
 # SSH public key injected at build time
 ARG SSH_PUBLIC_KEY
 
-# Run setup if needed (for newer OpenWrt versions)
-RUN [ -f ./setup.sh ] && ./setup.sh || true
+# Run setup.sh to initialize filesystem (creates /var/lock, etc.)
+RUN [ -f /setup.sh ] && /setup.sh || true
 
 # Update package lists and install minimal packages for SSH access
 RUN opkg update && opkg install \
