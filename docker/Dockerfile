@@ -18,8 +18,11 @@ FROM openwrt/rootfs:x86-64-openwrt-23.05
 # SSH public key injected at build time
 ARG SSH_PUBLIC_KEY
 
-# Run setup.sh to initialize filesystem (creates /var/lock, etc.)
+# Run setup.sh to initialize filesystem
 RUN [ -f /setup.sh ] && /setup.sh || true
+
+# Create /var/lock for opkg (required per OpenWRT Docker docs)
+RUN mkdir -p /var/lock
 
 # Update package lists and install minimal packages for SSH access
 RUN opkg update && opkg install \
