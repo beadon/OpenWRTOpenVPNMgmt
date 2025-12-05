@@ -13,7 +13,7 @@
 # Stop:
 #   Exit the interactive shell (Ctrl+D or 'exit') to stop the container
 
-FROM openwrt/rootfs:x86-64-openwrt-23.05
+FROM openwrt/rootfs:x86-64-23.05.5
 
 # SSH public key injected at build time
 ARG SSH_PUBLIC_KEY
