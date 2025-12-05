@@ -429,3 +429,18 @@ From OpenWRT Forum (lantis1008):
 - EasyRSA CRL expires after 180 days by default
 - Add auto-detection and fix functionality
 - Consider menu option for manual regeneration
+
+### IPv6 ULA Range Review (Pending Testing)
+Issues identified during testing with IPv6 configuration:
+- Review and modify ULA (Unique Local Address) ranges
+- Current default: `fd42:4242:4242:1194::/64`
+- Verify ULA range selection follows RFC 4193 recommendations
+- Test interaction between VPN IPv6 pool and router's existing IPv6 configuration
+- Update documentation and diagrams to reflect correct ULA usage
+- Consider auto-detection of suitable ULA ranges that don't conflict with existing network
+
+Areas to review:
+- Script defaults in `OVPN_IPV6_POOL`
+- README IPv6 section examples
+- Address Pool diagram
+- Static vs DHCPv6 mode behavior with ULA
