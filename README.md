@@ -17,6 +17,33 @@ Tired of managing keys, ovpn files and all different parts piecemeal? Use this s
 - **Permission Management** - Check and fix PKI file permissions
 - **Better Process Detection** - Consolidated PID lookup with accurate matching
 
+## Table of Contents
+
+- [Disclaimer](#disclaimer)
+- [First-Time Setup Guide](#first-time-setup-guide)
+  - [Prerequisites](#prerequisites)
+  - [Step-by-Step Setup](#step-by-step-setup)
+- [Features](#features)
+  - [UCI Management Integration](#uci-management-integration)
+  - [LuCI Integration](#luci-integration)
+  - [OpenVPN Monitoring](#openvpn-monitoring)
+- [Quick Reference - Common Operations](#quick-reference---common-operations)
+- [Troubleshooting](#troubleshooting)
+- [Advanced Usage](#advanced-usage)
+- [IPv6 VPN Tunnel Setup](#ipv6-vpn-tunnel-setup)
+- [License](#license)
+
+---
+
+## Disclaimer
+
+Tested on OpenWRT v23.05 and v24.10. Older versions may behave unexpectedly.
+Compatibility is expected for releases since v20.x.x from https://git.openwrt.org
+
+This project is provided "as-is", without warranty. Users are responsible for
+ensuring compatibility and security for their own environment and use case.
+
+---
 
 Assuming you have installed wget...
 ```
