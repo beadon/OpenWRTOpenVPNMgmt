@@ -71,6 +71,8 @@ refactor(menu): consolidate server control functions
 - Keep subject line under 72 characters
 - Use imperative mood ("add feature" not "added feature")
 - No unicode or emoji characters in commit messages
+- Keep commit messages concise; avoid redundant or verbose descriptions
+- Use `Co-Authored-By:` footer for collaborative commits (do not duplicate attribution)
 
 ## Pull Request Workflow
 

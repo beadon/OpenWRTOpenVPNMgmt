@@ -32,6 +32,7 @@ Tired of managing keys, ovpn files and all different parts piecemeal? Use this s
 - [Troubleshooting](#troubleshooting)
 - [Advanced Usage](#advanced-usage)
 - [IPv6 VPN Tunnel Setup](#ipv6-vpn-tunnel-setup)
+- [Development and Testing](#development-and-testing)
 - [License](#license)
 
 ---
@@ -1665,6 +1666,63 @@ logread | grep "odhcpd.*vpn"
 **For 99% of users, static mode provides everything needed without the complexity.**
 
 </details>
+
+---
+
+## Development and Testing
+
+A Docker-based OpenWRT test environment is available for development and testing.
+
+### Prerequisites
+
+- Docker installed on a Linux system
+- SSH public key at `~/.ssh/id_rsa.pub`
+
+### Build the Test Container
+
+```bash
+docker build --build-arg SSH_PUBLIC_KEY="$(cat ~/.ssh/id_rsa.pub)" -t openwrt-ovpn-test ./docker
+```
+
+### Run the Container
+
+```bash
+docker run -it --name openwrt-test -p 2222:22 openwrt-ovpn-test
+```
+
+This starts an interactive shell that keeps the container alive.
+
+### Connect via SSH
+
+From a separate terminal:
+
+```bash
+ssh root@localhost -p 2222
+```
+
+### Test the Script
+
+```bash
+# Copy script to container
+scp -P 2222 openvpn_server_management.sh root@localhost:/root/
+
+# Run via SSH
+ssh root@localhost -p 2222 '/root/openvpn_server_management.sh'
+```
+
+### Stop the Container
+
+Exit the interactive shell with `Ctrl+D` or `exit`.
+
+### Cleanup
+
+```bash
+docker rm openwrt-test
+```
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for development guidelines and commit message standards.
+
+---
 
 # LICENSE
 Copyright (C) 2025 Bryant Eadon
