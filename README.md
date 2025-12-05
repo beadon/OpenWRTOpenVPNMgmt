@@ -1,13 +1,13 @@
 # OpenWRT OpenVPN Server Management
 
-**Version: v2.5**
+**Version: v2.5.0**
 
 Openwrt VPN setup and management script, making management of Open VPN via CLI much simpler.
 
 The All-in-One OpenVPN Management Script
 Tired of managing keys, ovpn files and all different parts piecemeal? Use this script on the CLI to manage it all.
 
-## What's New in v2.5
+## What's New in v2.5.0
 
 - **Server Control Menu** - Centralized start/stop/restart with status checking
 - **Safe Restart** - Automatic detection of active client connections before restart
@@ -1568,3 +1568,21 @@ logread | grep "odhcpd.*vpn"
 - Works even if odhcpd fails
 
 **For 99% of users, static mode provides everything needed without the complexity.**
+
+
+# LICENSE
+Copyright (C) 2025 Bryant Eadon
+
+This program is free software; you can redistribute it and/or
+modify it under the terms of the GNU General Public License
+as published by the Free Software Foundation; either version 2
+of the License, or (at your option) any later version.
+
+This program is distributed in the hope that it will be useful,
+but WITHOUT ANY WARRANTY; without even the implied warranty of
+MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+GNU General Public License for more details.
+
+You should have received a copy of the GNU General Public License
+along with this program; if not, see
+<https://www.gnu.org/licenses/>.

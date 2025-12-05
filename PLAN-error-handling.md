@@ -349,3 +349,83 @@ Add `set -e` / `set +e` blocks around critical multi-step operations:
 - Persistent logging to `/var/log/openvpn-mgmt.log`
 - `--dry-run` mode for testing
 - Input validation helpers with timeouts
+
+---
+
+## Project Standards & Conventions (Future Improvements)
+
+### Commit Message Standards
+**Current:** Informal lowercase messages without type prefixes
+**Recommended:** Adopt [Conventional Commits](https://www.conventionalcommits.org/en/v1.0.0/)
+
+Format:
+```
+<type>(<scope>): <description>
+
+[optional body]
+
+[optional footer(s)]
+```
+
+Types:
+- `feat:` - New feature (bumps MINOR version)
+- `fix:` - Bug fix (bumps PATCH version)
+- `docs:` - Documentation only
+- `refactor:` - Code change that neither fixes a bug nor adds a feature
+- `test:` - Adding or correcting tests
+- `chore:` - Maintenance tasks
+
+Examples:
+```
+feat(ipv6): add DHCPv6 mode for advanced IPv6 configuration
+fix(permissions): resolve delimiter problem in permission checks
+docs: update README with v2.5.0 features
+refactor(menu): consolidate server control functions
+```
+
+Benefits:
+- Automatic CHANGELOG generation
+- Automatic SemVer bump determination
+- Machine-readable commit history
+- Clearer intent communication
+
+### Variable Naming Conventions
+**Current state:**
+- Global config variables: `OVPN_*` prefix (UPPERCASE)
+- Script metadata: `SCRIPT_*` prefix
+- Local function variables: lowercase with `local` keyword
+- True constants: `readonly` (SCRIPT_VERSION, OVPN_INSTANCE_TYPE)
+
+**Guidelines:**
+1. All global constants should use `readonly`
+2. User-editable config variables should NOT be readonly
+3. Dynamic variables (updated at runtime) should NOT be readonly
+4. Use `${var:-default}` pattern for optional variables
+
+### Function Naming
+**Current:** `snake_case` with `verb_noun` pattern (good)
+
+**Minor improvements to consider:**
+| Current | Suggested | Reason |
+|---------|-----------|--------|
+| `check_fix_permissions` | `check_and_fix_permissions` | Clearer dual action |
+| `key_management_first_time` | `initialize_pki` | More descriptive |
+| `generate_single_ovpn` | `generate_client_ovpn` | Clearer target |
+
+### Documentation Standards
+**Recommended additions:**
+1. **CHANGELOG.md** - Track version history with SemVer sections
+2. **CONTRIBUTING.md** - Document commit message requirements
+3. **Version badge** - Add to README header
+
+### POSIX Compliance
+Per [OpenWRT Code Style Guide](https://openwrt.org/code_style_guide):
+- Use `#!/bin/sh` (Almquist shell, not bash)
+- Validate with `shellcheck` for POSIX conformance
+- Avoid bash-specific features
+
+### CRL Auto-Regeneration (Community Request)
+From OpenWRT Forum (lantis1008):
+- EasyRSA CRL expires after 180 days by default
+- Add auto-detection and fix functionality
+- Consider menu option for manual regeneration

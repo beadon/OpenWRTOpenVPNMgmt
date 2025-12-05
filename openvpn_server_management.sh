@@ -20,7 +20,7 @@
 ###############################################################################
 #                   OpenWRT OpenVPN Server Management Script                  #
 #                                                                             #
-#  Version: v2.5                                                              #
+#  Version: v2.5.0                                                            #
 #  Repository: https://github.com/beadon/OpenWRTOpenVPNMgmt                   #
 #                                                                             #
 #  All-in-one OpenVPN server management for OpenWrt                           #
@@ -29,7 +29,7 @@
 #  - IPv6 support, firewall configuration, monitoring                         #
 ###############################################################################
 
-SCRIPT_VERSION="v2.5"
+readonly SCRIPT_VERSION="v2.5.0"
 
 ################################################################################
 #                        USER CONFIGURATION SECTION                            #
@@ -61,7 +61,7 @@ OVPN_DIR="/root/ovpn_config_out"         # Output directory for client configs
 ################################################################################
 
 # Instance configuration
-OVPN_INSTANCE_TYPE="server"              # Type: server only (clients not managed)
+readonly OVPN_INSTANCE_TYPE="server"     # Type: server only (clients not managed)
 
 # Dynamic paths (updated when instance changes)
 OVPN_SERVER_CONF="/etc/openvpn/${OVPN_INSTANCE}.conf"
