@@ -132,6 +132,18 @@ info() {
     echo "INFO: $1" >&2
 }
 
+# Run command with error reporting
+# Usage: run_cmd "description" command [args...]
+# Returns: 0 on success, 1 on failure (with error message)
+run_cmd() {
+    local desc="$1"
+    shift
+    if ! "$@"; then
+        echo "ERROR: Failed to $desc" >&2
+        return 1
+    fi
+}
+
 ################################################################################
 
 # UCI Helper Functions for Instance Management
@@ -1384,7 +1396,9 @@ generate_server_conf() {
         
         # Create backup
         echo "Creating backup..."
-        cp "$OVPN_SERVER_CONF" "$OVPN_SERVER_BACKUP"
+        if ! run_cmd "create backup of server.conf" cp "$OVPN_SERVER_CONF" "$OVPN_SERVER_BACKUP"; then
+            return 1
+        fi
         echo "Backup created: $OVPN_SERVER_BACKUP"
     else
         echo "No existing server.conf found. Creating new configuration."
@@ -1398,10 +1412,12 @@ generate_server_conf() {
     
     echo ""
     echo "Generating server.conf..."
-    
+
     # Ensure directory exists
-    mkdir -p "$(dirname "$OVPN_SERVER_CONF")"
-    
+    if ! run_cmd "create config directory" mkdir -p "$(dirname "$OVPN_SERVER_CONF")"; then
+        return 1
+    fi
+
     # Generate server configuration
     cat << EOF > ${OVPN_SERVER_CONF}
 # OpenVPN Server Configuration
@@ -1587,8 +1603,10 @@ restore_server_conf() {
     fi
     
     echo "Restoring configuration..."
-    cp "$OVPN_SERVER_BACKUP" "$OVPN_SERVER_CONF"
-    
+    if ! run_cmd "restore configuration from backup" cp "$OVPN_SERVER_BACKUP" "$OVPN_SERVER_CONF"; then
+        return 1
+    fi
+
     echo "Configuration restored from backup"
     echo ""
     
@@ -1779,27 +1797,30 @@ renew_certificate() {
     
     echo ""
     echo "Renewing certificate for $cert_name..."
-    
+
     # Use easyrsa renew command (available in easyrsa 3.2.1+)
     # If renew is not available, use the expire + sign-req method
     if easyrsa help 2>&1 | grep -q "renew"; then
-        easyrsa renew "$cert_name" nopass
-    else
-        echo "Note: Using expire + sign-req method (easyrsa < 3.2.1)"
-        easyrsa expire "$cert_name" && easyrsa sign-req client "$cert_name"
-    fi
-    
-    if [ $? -eq 0 ]; then
-        echo ""
-        echo "Certificate renewed successfully!"
-        echo "Note: You will need to regenerate the .ovpn config file for this client."
-        echo ""
-        read -p "Regenerate .ovpn file now? (y/n): " regen
-        if [ "$regen" = "y" ] || [ "$regen" = "Y" ]; then
-            generate_single_ovpn "$cert_name"
+        if ! run_cmd "renew certificate for $cert_name" easyrsa renew "$cert_name" nopass; then
+            return 1
         fi
     else
-        echo "Error: Certificate renewal failed"
+        echo "Note: Using expire + sign-req method (easyrsa < 3.2.1)"
+        if ! run_cmd "expire certificate for $cert_name" easyrsa expire "$cert_name"; then
+            return 1
+        fi
+        if ! run_cmd "sign certificate request for $cert_name" easyrsa sign-req client "$cert_name"; then
+            return 1
+        fi
+    fi
+
+    echo ""
+    echo "Certificate renewed successfully!"
+    echo "Note: You will need to regenerate the .ovpn config file for this client."
+    echo ""
+    read -p "Regenerate .ovpn file now? (y/n): " regen
+    if [ "$regen" = "y" ] || [ "$regen" = "Y" ]; then
+        generate_single_ovpn "$cert_name"
     fi
 }
 
@@ -1825,10 +1846,32 @@ generate_single_ovpn() {
     echo "Generating .ovpn file for $OVPN_ID..."
 
     umask go=
-    OVPN_CA="$(openssl x509 -in ${OVPN_PKI}/ca.crt)"
-    OVPN_TC="$(cat ${OVPN_PKI}/private/${OVPN_ID}.pem)"
-    OVPN_KEY="$(cat ${OVPN_PKI}/private/${OVPN_ID}.key)"
-    OVPN_CERT="$(openssl x509 -in ${OVPN_PKI}/issued/${OVPN_ID}.crt)"
+
+    # Read CA certificate
+    if ! OVPN_CA="$(openssl x509 -in "${OVPN_PKI}/ca.crt" 2>/dev/null)"; then
+        echo "ERROR: Failed to read CA certificate" >&2
+        return 1
+    fi
+
+    # Read TLS-Crypt key
+    if [ ! -f "${OVPN_PKI}/private/${OVPN_ID}.pem" ]; then
+        echo "ERROR: TLS-Crypt key not found for $OVPN_ID" >&2
+        return 1
+    fi
+    OVPN_TC="$(cat "${OVPN_PKI}/private/${OVPN_ID}.pem")"
+
+    # Read client private key
+    if [ ! -f "${OVPN_PKI}/private/${OVPN_ID}.key" ]; then
+        echo "ERROR: Private key not found for $OVPN_ID" >&2
+        return 1
+    fi
+    OVPN_KEY="$(cat "${OVPN_PKI}/private/${OVPN_ID}.key")"
+
+    # Read client certificate
+    if ! OVPN_CERT="$(openssl x509 -in "${OVPN_PKI}/issued/${OVPN_ID}.crt" 2>/dev/null)"; then
+        echo "ERROR: Failed to read client certificate for $OVPN_ID" >&2
+        return 1
+    fi
 
     OVPN_CONF="${OVPN_DIR}/${OVPN_ID}.ovpn"
     
@@ -1957,9 +2000,13 @@ create_client() {
     fi
 
     echo "Building new keys for $NEW_CLIENT"
-    easyrsa build-client-full $NEW_CLIENT nopass
-    openvpn --tls-crypt-v2 ${EASYRSA_PKI}/private/server.pem \
-        --genkey tls-crypt-v2-client ${EASYRSA_PKI}/private/$NEW_CLIENT.pem
+    if ! run_cmd "build client certificate for $NEW_CLIENT" easyrsa build-client-full "$NEW_CLIENT" nopass; then
+        return 1
+    fi
+    if ! run_cmd "generate TLS-Crypt-v2 key for $NEW_CLIENT" openvpn --tls-crypt-v2 "${EASYRSA_PKI}/private/server.pem" \
+        --genkey tls-crypt-v2-client "${EASYRSA_PKI}/private/$NEW_CLIENT.pem"; then
+        return 1
+    fi
 
     echo ""
     read -p "Generate .ovpn config file? (y/n): " gen_ovpn
@@ -2027,11 +2074,15 @@ revoke_client() {
     case $confirm in
         yes)
             echo "Revoking certificate for $CLIENT_TO_REVOKE..."
-            easyrsa revoke $CLIENT_TO_REVOKE
-            
+            if ! run_cmd "revoke certificate for $CLIENT_TO_REVOKE" easyrsa revoke "$CLIENT_TO_REVOKE"; then
+                return 1
+            fi
+
             echo "Generating Certificate Revocation List (CRL)..."
-            easyrsa gen-crl
-            
+            if ! run_cmd "generate CRL" easyrsa gen-crl; then
+                return 1
+            fi
+
             echo ""
             echo "Certificate revoked successfully."
             echo "CRL updated at: ${OVPN_PKI}/crl.pem"
@@ -2715,17 +2766,27 @@ key_management_first_time() {
     export EASYRSA_BATCH="1"
 
     # Remove and re-initialize PKI directory
-    easyrsa init-pki
+    if ! run_cmd "initialize PKI directory" easyrsa init-pki; then
+        return 1
+    fi
 
     # Generate DH parameters
-    easyrsa gen-dh
+    if ! run_cmd "generate DH parameters" easyrsa gen-dh; then
+        return 1
+    fi
 
     # Create a new CA
-    easyrsa build-ca nopass
+    if ! run_cmd "build Certificate Authority" easyrsa build-ca nopass; then
+        return 1
+    fi
 
     # Generate server keys and certificate
-    easyrsa build-server-full server nopass
-    openvpn --genkey tls-crypt-v2-server ${EASYRSA_PKI}/private/server.pem
+    if ! run_cmd "build server certificate" easyrsa build-server-full server nopass; then
+        return 1
+    fi
+    if ! run_cmd "generate TLS-Crypt-v2 server key" openvpn --genkey tls-crypt-v2-server "${EASYRSA_PKI}/private/server.pem"; then
+        return 1
+    fi
 
 }
 
