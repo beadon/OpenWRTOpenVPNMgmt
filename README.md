@@ -20,6 +20,7 @@ Tired of managing keys, ovpn files and all different parts piecemeal? Use this s
 ## Table of Contents
 
 - [Disclaimer](#disclaimer)
+- [Architecture Overview](#architecture-overview)
 - [First-Time Setup Guide](#first-time-setup-guide)
   - [Prerequisites](#prerequisites)
   - [Step-by-Step Setup](#step-by-step-setup)
@@ -42,6 +43,66 @@ Compatibility is expected for releases since v20.x.x from https://git.openwrt.or
 
 This project is provided "as-is", without warranty. Users are responsible for
 ensuring compatibility and security for their own environment and use case.
+
+---
+
+## Architecture Overview
+
+### Network Flow
+
+How VPN clients connect through your OpenWRT router to access LAN resources:
+
+```mermaid
+flowchart LR
+    subgraph Internet
+        WAN[WAN]
+    end
+
+    subgraph clients [VPN Clients]
+        C1[Phone]
+        C2[Laptop]
+    end
+
+    subgraph router [OpenWRT Router]
+        FW[Firewall<br/>Port 1194]
+        OVPN[OpenVPN<br/>Server]
+        LAN[LAN Bridge<br/>br-lan]
+    end
+
+    subgraph local [Local Network]
+        D1[LAN Devices]
+    end
+
+    C1 & C2 -->|Encrypted<br/>UDP 1194| WAN
+    WAN --> FW
+    FW --> OVPN
+    OVPN --> LAN
+    LAN --> D1
+```
+
+### Address Pools
+
+IP address pools managed by this script:
+
+```mermaid
+flowchart TB
+    subgraph pools [Address Pools]
+        subgraph vpn ["VPN Tunnel (tun0)"]
+            V4["IPv4: 10.8.0.0/24<br/>Server: 10.8.0.1"]
+            V6["IPv6: fd42::/64<br/>(optional)"]
+        end
+
+        subgraph lan ["LAN (br-lan)"]
+            L4["192.168.1.0/24"]
+        end
+    end
+
+    V4 --> C1["Client 1<br/>10.8.0.2"]
+    V4 --> C2["Client 2<br/>10.8.0.3"]
+    V6 -.->|"if enabled"| C1v6["fd42::2"]
+
+    vpn <-->|"Routed"| lan
+```
 
 ---
 
