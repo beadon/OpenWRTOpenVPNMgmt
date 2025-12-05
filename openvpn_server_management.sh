@@ -1,4 +1,7 @@
 #!/bin/sh
+# Strict mode: exit on undefined variables
+# To disable if issues arise, comment out the next line
+set -u
 ###############################################################################
 #                               LICENSE
 # Copyright (C) 2025 Bryant Eadon
@@ -89,6 +92,47 @@ update_instance_paths() {
     OVPN_SERVER_CONF="/etc/openvpn/${OVPN_INSTANCE}.conf"
     OVPN_SERVER_BACKUP="/etc/openvpn/${OVPN_INSTANCE}.conf.BAK"
 }
+
+################################################################################
+#                          ERROR HANDLING FUNCTIONS                            #
+################################################################################
+
+# Temp file tracking for cleanup
+TEMP_FILES=""
+
+# Cleanup handler - removes registered temp files on exit
+cleanup() {
+    local file
+    for file in $TEMP_FILES; do
+        rm -f "$file" 2>/dev/null
+    done
+}
+
+# Register cleanup trap for exit and common signals
+trap cleanup EXIT INT TERM HUP
+
+# Register a temp file for automatic cleanup
+register_temp() {
+    TEMP_FILES="$TEMP_FILES $1"
+}
+
+# Fatal error - print message and exit
+error_exit() {
+    echo "ERROR: $1" >&2
+    exit 1
+}
+
+# Warning - print message but continue
+warn() {
+    echo "WARNING: $1" >&2
+}
+
+# Info message to stderr (for logging without cluttering stdout)
+info() {
+    echo "INFO: $1" >&2
+}
+
+################################################################################
 
 # UCI Helper Functions for Instance Management
 
@@ -2276,6 +2320,7 @@ monitor_single_instance() {
 
         # Extract ONLY the LAST CLIENT LIST section from log file (the one we just triggered)
         local temp_clients="/tmp/openvpn_monitor_$$"
+        register_temp "$temp_clients"
         tail -300 "$log_file" 2>/dev/null | awk '
             /OpenVPN CLIENT LIST/ {
                 # Start of a new client list - reset everything to capture only the last one
@@ -2345,9 +2390,7 @@ monitor_single_instance() {
                 fi
             done < "$temp_clients"
         fi
-
-        # Clean up temp file
-        rm -f "$temp_clients"
+        # Temp file cleaned up automatically by trap
     else
         echo "=================================================="
         echo "Note: OpenVPN log file not found at $log_file"
@@ -2822,6 +2865,7 @@ check_active_connections() {
         if [ -f "$log_file" ]; then
             # Create temp file to extract the CLIENT LIST section
             temp_extract="/tmp/openvpn_client_check_$$"
+            register_temp "$temp_extract"
 
             # Get last 300 lines to ensure we capture the full CLIENT LIST block
             # Extract ONLY the LAST "OpenVPN CLIENT LIST" section (the one we just triggered)
@@ -2861,9 +2905,7 @@ check_active_connections() {
             # Strip any whitespace and ensure it's a number
             connection_count=$(echo "$connection_count" | tr -d ' \t\n\r')
             connection_count=${connection_count:-0}
-
-            # Clean up temp file
-            rm -f "$temp_extract"
+            # Temp file cleaned up automatically by trap
         else
             # Log file doesn't exist - fallback to network interface method
             for tun_if in $(ip link show | grep -o "tun[0-9]*" | sort -u); do
@@ -3262,6 +3304,7 @@ check_fix_permissions() {
 
     # Create temp file to store issues for batch fixing
     local temp_issues="/tmp/openvpn_perm_issues_$$"
+    register_temp "$temp_issues"
     > "$temp_issues"  # Clear/create temp file
 
     # Check 1: Private keys must be 600 (CRITICAL SECURITY)
@@ -3472,9 +3515,7 @@ check_fix_permissions() {
     fi
     echo "=========================================="
     echo ""
-
-    # Cleanup temp file
-    rm -f "$temp_issues"
+    # Temp file cleaned up automatically by trap
 }
 
 # Clear terminal at startup for clean display
