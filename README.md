@@ -78,7 +78,8 @@ This guide assumes you're starting from scratch with nothing installed. Follow t
 
    The script will auto-create the default "server" instance on first run.
 
-## Step-by-Step Setup
+<details>
+<summary><strong>Step-by-Step Setup</strong> (click to expand)</summary>
 
 ### Step 1: Install LuCI Web Interface (Optional but Recommended)
 
@@ -397,6 +398,8 @@ curl -6 ifconfig.co     # Check IPv6 address (if enabled)
 
 One the client device (the laptop or mobile device) open a browser while the VPN connection is established to check that this reflect's the OpenVPN server's IP [https://www.whatismyip.com/](https://www.whatismyip.com/)
 
+</details>
+
 # FEATURES
 
 ## UCI Management Integration
@@ -659,7 +662,8 @@ Safe restart with connection checking is automatically used in:
 - After creating new client certificates (Menu Option 4)
 - After revoking client certificates (Menu Option 6)
 
-## Troubleshooting
+<details>
+<summary><strong>Troubleshooting</strong> (click to expand)</summary>
 
 ### IPv6 Not Working - VPN Clients Can't Access Internet via IPv6
 
@@ -1076,6 +1080,8 @@ uci show network.lan
 Enter client name: laptop
 ```
 
+</details>
+
 ## Advanced Usage
 
 ### Multiple Server Instances
@@ -1107,7 +1113,8 @@ OVPN_IPV6_POOL_SIZE="253"     # Max clients
 
 
 
-# IPv6 VPN Tunnel Setup
+<details>
+<summary><strong>IPv6 VPN Tunnel Setup</strong> (click to expand - optional/advanced)</summary>
 
 **IMPORTANT: IPv6 is DISABLED by default and is completely OPTIONAL.**
 
@@ -1596,6 +1603,7 @@ logread | grep "odhcpd.*vpn"
 
 **For 99% of users, static mode provides everything needed without the complexity.**
 
+</details>
 
 # LICENSE
 Copyright (C) 2025 Bryant Eadon
