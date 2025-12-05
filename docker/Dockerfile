@@ -33,9 +33,6 @@ RUN mkdir -p /etc/dropbear /root/.ssh && \
     echo "$SSH_PUBLIC_KEY" > /etc/dropbear/authorized_keys && \
     chmod 600 /etc/dropbear/authorized_keys
 
-# Set root password to 'admin'
-RUN sed -i 's|^root::|root:$1$xyz$a0528HhbLOUB8xGVmyhEq/:|' /etc/shadow
-
 # Expose SSH port
 EXPOSE 22
 
