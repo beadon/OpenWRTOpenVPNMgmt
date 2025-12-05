@@ -444,3 +444,17 @@ Areas to review:
 - README IPv6 section examples
 - Address Pool diagram
 - Static vs DHCPv6 mode behavior with ULA
+
+### Docker Test Environment (Future)
+Current limitation: Using `openwrt/rootfs:x86-64-23.05.5` for testing.
+
+Issues with newer versions:
+- `x86-64-openwrt-24.10` and `x86-64-24.10-SNAPSHOT` have broken kmods URLs
+- `x86_64` tag is minimal image without opkg
+- SNAPSHOT versions have unstable package repository URLs
+
+Future options to consider:
+- Monitor for stable 24.10.x release tags
+- Build custom OpenWRT Docker image from ImageBuilder
+- Use OpenWRT SDK container for more control
+- Alternative: test on actual hardware or full VM instead of Docker
