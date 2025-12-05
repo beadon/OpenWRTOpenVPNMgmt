@@ -10,7 +10,119 @@
 - Incremental implementation for easy review
 - Persistent logging deferred for later
 
-**Testing:** Docker-based OpenWrt rootfs container
+**Testing:** Docker-based OpenWrt rootfs container with ShellSpec framework
+
+---
+
+## Implementation Progress
+
+### Phase 1: Foundation - COMPLETED
+- [x] Add `set -u` at script start
+- [x] Add temp file cleanup trap (`cleanup()`, `register_temp()`)
+- [x] Add `error_exit()`, `warn()`, `info()` helper functions
+- [x] Update temp file usage to use `register_temp()`
+
+### Phase 2: Standardize Error Reporting - COMPLETED
+- [x] Create `run_cmd()` helper for commands that should report failures
+- [x] Update `create_client()` with error checking
+- [x] Update `revoke_client()` with error checking
+- [x] Update `renew_certificate()` with error checking
+- [x] Update `key_management_first_time()` with error checking
+- [x] Update `generate_server_conf()` file operations with error checking
+- [x] Update `restore_server_conf()` with error checking
+- [x] Update `generate_single_ovpn()` with error checking
+- [ ] Add logging function for optional persistent logging (deferred)
+
+### Phase 3: Critical Section Protection - PENDING
+- [ ] Wrap `key_management_first_time()` with `set -e` / `set +e`
+- [ ] Wrap `configure_vpn_firewall()` with `set -e` / `set +e`
+- [ ] Wrap `generate_server_conf()` with `set -e` / `set +e`
+
+### Phase 4: Enhanced Robustness - PENDING
+- [ ] Add input validation helpers
+- [ ] Add timeout helpers for `read` commands
+- [ ] Consider `--dry-run` mode
+
+---
+
+## Testing Framework: ShellSpec
+
+### Why ShellSpec
+- BDD-style testing framework for POSIX shells
+- Explicitly supports busybox ash (OpenWRT's shell)
+- Tested on OpenWRT via Docker in ShellSpec's own CI
+- Works with GitHub Actions
+- Uses only POSIX-compliant commands
+
+### Test Structure
+```
+spec/
+├── spec_helper.sh          # Common setup, Docker helpers
+├── error_handling_spec.sh  # Unit tests for error functions
+├── create_client_spec.sh   # Integration test for client creation
+├── revoke_client_spec.sh   # Integration test for revocation
+├── generate_conf_spec.sh   # Integration test for config generation
+└── pki_init_spec.sh        # Integration test for PKI initialization
+```
+
+### Test Categories
+
+**Unit Tests (fast, no Docker):**
+- `run_cmd()` success/failure behavior
+- `error_exit()` output format
+- `warn()` and `info()` output format
+- `register_temp()` and `cleanup()` behavior
+
+**Integration Tests (require Docker):**
+- Menu option 12: EasyRSA/PKI initialization
+- Menu option 1: Generate server.conf
+- Menu option 4: Create client certificate
+- Menu option 6: Revoke client certificate
+- Menu option 11: Generate .ovpn file
+- Error handling when commands fail (e.g., missing dependencies)
+
+### GitHub Actions CI Workflow
+```yaml
+# .github/workflows/test.yml
+name: Tests
+on: [push, pull_request]
+jobs:
+  unit-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install ShellSpec
+        run: curl -fsSL https://git.io/shellspec | sh -s -- --yes
+      - name: Run unit tests
+        run: shellspec --shell ash spec/unit/
+
+  integration-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build OpenWRT container
+        run: docker build -t openwrt-test ./docker
+      - name: Install ShellSpec
+        run: curl -fsSL https://git.io/shellspec | sh -s -- --yes
+      - name: Run integration tests
+        run: shellspec --shell ash spec/integration/
+```
+
+### Running Tests Locally
+```bash
+# Install ShellSpec
+curl -fsSL https://git.io/shellspec | sh -s -- --yes
+
+# Run all tests
+shellspec
+
+# Run only unit tests (no Docker needed)
+shellspec spec/unit/
+
+# Run integration tests (requires Docker)
+docker build -t openwrt-test ./docker
+shellspec spec/integration/
+```
 
 ---
 
@@ -349,6 +461,7 @@ Add `set -e` / `set +e` blocks around critical multi-step operations:
 - Persistent logging to `/var/log/openvpn-mgmt.log`
 - `--dry-run` mode for testing
 - Input validation helpers with timeouts
+- ShellSpec test suite implementation (see Testing Framework section above)
 
 ---
 
