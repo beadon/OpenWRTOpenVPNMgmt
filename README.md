@@ -1,11 +1,18 @@
 # OpenWRT OpenVPN Server Management
 
-**Version: v2.5.0**
+**Version: v2.6.0**
 
 Openwrt VPN setup and management script, making management of Open VPN via CLI much simpler.
 
 The All-in-One OpenVPN Management Script
 Tired of managing keys, ovpn files and all different parts piecemeal? Use this script on the CLI to manage it all.
+
+## What's New in v2.6.0
+
+- **OpenWRT 25 Support** - Automatic detection of `apk` (OpenWRT 25+) or `opkg` (older versions) for all package operations
+- **Install Required Packages Menu** - New menu option 19 installs `at`, `openvpn-openssl`, and `openvpn-easy-rsa` in one step
+- **LuCI File Manager** - Option 13 now also installs `luci-app-filemanager` for easy .ovpn file downloads via the web interface
+- **Exit moved to option 20**
 
 ## What's New in v2.5.0
 
@@ -109,8 +116,13 @@ flowchart TB
 
 Assuming you have installed wget...
 ```
+# OpenWRT 24 and earlier:
 opkg update
 opkg install wget
+
+# OpenWRT 25 and later:
+apk update
+apk add wget
 ```
 Then if you are SSSH'd into OpenWRT now, grab then run it like this:
 ```
@@ -125,13 +137,7 @@ This guide assumes you're starting from scratch with nothing installed. Follow t
 
 ## Prerequisites
 
-1. **Install required packages:**
-   ```bash
-   opkg update
-   opkg install openvpn-openssl wget
-   ```
-
-2. **Download and run the script:**
+1. **Download and run the script:**
    ```bash
    wget https://raw.githubusercontent.com/beadon/OpenWRTOpenVPNMgmt/refs/heads/main/openvpn_server_management.sh
    chmod 775 openvpn_server_management.sh
@@ -143,31 +149,49 @@ This guide assumes you're starting from scratch with nothing installed. Follow t
 <details>
 <summary><strong>Step-by-Step Setup</strong> (click to expand)</summary>
 
-### Step 1: Install LuCI Web Interface (Optional but Recommended)
+### Step 1: Install Required Packages
+
+**Menu Option: 19**
+
+```
+19) Install required packages (at, openvpn-openssl, openvpn-easy-rsa)
+Continue with installation? (yes/no): yes
+```
+
+This installs the core packages needed to run the script:
+- `at` — used for scheduling safe restarts
+- `openvpn-openssl` — the OpenVPN daemon
+- `openvpn-easy-rsa` — certificate and PKI management
+
+The script automatically uses `apk` on OpenWRT 25+ or `opkg` on older versions.
+
+### Step 2: Install LuCI Web Interface (Optional but Recommended)
 
 **Menu Option: 13**
 
 ```
-13) Install LuCI OpenVPN web interface
+13) Install LuCI OpenVPN and File Manager web interface
 Continue with installation? (yes/no): yes
 ```
 
-This installs `luci-app-openvpn` which provides:
+This installs `luci-app-openvpn` and `luci-app-filemanager` which provide:
 - Web-based management interface
 - Instance control (start/stop/restart)
 - Configuration file editing
 - Status monitoring
+- File manager for downloading generated client .ovpn files
 
 **Access:** Web Interface → Services → OpenVPN (or System → OpenVPN)
+**File Manager:** Web Interface → System → File Manager
 
 **Note:** Changes made in LuCI and this script are synchronized via UCI.
 
-### Step 2: Install and Initialize EasyRSA
+### Step 3: Initialize EasyRSA
 
 **Menu Option: 12**
 
 ```
-12) Install and initialize EasyRSA for OpenVPN
+12) Initialize EasyRSA for OpenVPN
 ```
 
 This will:
@@ -179,7 +203,7 @@ This will:
 
 **Important:** This step takes several minutes due to cryptographic key generation.
 
-### Step 3: Auto-Detect Server Settings
+### Step 4: Auto-Detect Server Settings
 
 **Menu Option: 0**
 
@@ -195,7 +219,7 @@ This automatically detects:
 
 Review the detected settings. The script will use these for configuration generation.
 
-**Note:** IPv6 support is disabled by default. If you want to enable IPv6 for your VPN, use Menu Option 3 after reviewing the auto-detected IPv6 settings.
+**Note:** IPv6 support is disabled by default. If you want to enable IPv6 for your VPN, use Menu Option 3 after reviewing the auto-detected IPv6 settings (Step 5 below).
 
 **DDNS Support:**
 
@@ -209,7 +233,7 @@ The auto-detect feature will automatically detect your DDNS hostname if configur
 
 If DDNS is not configured, the script will fall back to using your current WAN IP address.
 
-### Step 4: Configure IPv6 (Optional - Advanced Users)
+### Step 5: Configure IPv6 (Optional - Advanced Users)
 
 **Note:** IPv6 is disabled by default to avoid configuration conflicts. Only enable if you understand IPv6 networking and have verified your router has proper IPv6 prefix delegation from your ISP.
 
@@ -230,10 +254,10 @@ Enter max clients limit (default 253): 100
 ```
 
 **IPv6 Subnet Options:**
-- **Globally routable:** Use a /64 from your ISP's delegation (detected in Step 3)
+- **Globally routable:** Use a /64 from your ISP's delegation (detected in Step 4)
 - **Private ULA:** Generate at https://unique-local-ipv6.com/
 
-### Step 4.5: Configure Performance Settings (Optional)
+### Step 5.5: Configure Performance Settings (Optional)
 
 **Menu Option: p**
 
@@ -302,7 +326,7 @@ Enter bandwidth limit in bytes per second:
 
 **Note:** The `shaper` directive applies to outgoing traffic from the server. For more advanced per-client bandwidth control, consider using Traffic Control (tc) scripts.
 
-### Step 5: Generate Server Configuration
+### Step 6: Generate Server Configuration
 
 **Menu Option: 1**
 
@@ -323,7 +347,7 @@ This creates `/etc/openvpn/server.conf` with:
 
 **Autostart Configuration:** The script automatically enables the OpenVPN service to start on router boot by running `/etc/init.d/openvpn enable`. This ensures your VPN server starts automatically after power cycles or reboots.
 
-### Step 6: Configure Firewall
+### Step 7: Configure Firewall
 
 **Menu Option: 15**
 
@@ -374,9 +398,9 @@ Restart firewall to apply changes? (y/n): y
 - IPv6 zones properly configured
 - IPv6 forwarding rules exist
 
-### Step 7: Restart OpenVPN
+### Step 8: Restart OpenVPN
 
-From Step 5, when prompted:
+From Step 6, when prompted:
 
 ```
 Restart OpenVPN instance 'server' to apply changes? (y/n): y
@@ -387,7 +411,7 @@ Or manually:
 /etc/init.d/openvpn restart server
 ```
 
-### Step 8: Create Your First Client Certificate
+### Step 9: Create Your First Client Certificate
 
 **Menu Option: 4**
 
@@ -419,7 +443,7 @@ This can be arranged any way you like, consider a naming scheme like:
 - TLS-Crypt key: `/etc/easy-rsa/pki/private/bill.laptop.pem`
 - Client config: `/root/ovpn_config_out/bill.laptop.ovpn`
 
-### Step 9: Download Client Configuration
+### Step 10: Download Client Configuration
 
 The `.ovpn` file is located at: `/root/ovpn_config_out/bill.laptop.ovpn`
 
@@ -431,11 +455,10 @@ scp root@192.168.1.1:/root/ovpn_config_out/bill.laptop.ovpn ~/Downloads/
 ```
 
 **Or via LuCI Web Interface:**
-NOTE: file browser is installable as ```opkg install luci-app-filemanager```
 
-1. Navigate to System → File Browser (if available)
+Install the file manager via menu option 13, then navigate to System → File Browser
 
-### Step 10: Connect Your Client
+### Step 11: Connect Your Client
 
 **Windows/Mac/Linux:**
 1. Install OpenVPN client
@@ -491,8 +514,8 @@ One the client device (the laptop or mobile device) open a browser while the VPN
     - Shows instance status, config file path, and running state
 
 ## LuCI Integration
-  - Install luci-app-openvpn with one command
-  - Automatic opkg update and package installation
+  - Install `luci-app-openvpn` and `luci-app-filemanager` with one command (menu option 13)
+  - Automatic package installation using `apk` (OpenWRT 25+) or `opkg` (older versions)
   - Changes made in LuCI web interface appear in this script and vice versa
 
 ### Viewing VPN Tunnel in LuCI
@@ -711,7 +734,7 @@ To cancel a scheduled job: atrm <job_number>
 **Automatic 'at' Installation:**
 
 The `at` utility (for scheduling) is automatically installed if not present:
-- Runs `opkg update && opkg install at`
+- Uses `apk add at` (OpenWRT 25+) or `opkg update && opkg install at` (older versions)
 - Enables and starts the `atd` daemon
 - Provides job management commands (`atq`, `atrm`)
 
@@ -1509,7 +1532,7 @@ Check prerequisites and show configuration guide? (y/n): y
 **Step 2: Review the prerequisite check results**
 
 The script will check:
-- Is odhcpd installed? If not: `opkg update && opkg install odhcpd`
+- Is odhcpd installed? If not: install via your package manager (`apk add odhcpd` or `opkg install odhcpd`)
 - Is odhcpd running? If not: `/etc/init.d/odhcpd start && /etc/init.d/odhcpd enable`
 
 **Step 3: Follow the manual configuration guide**

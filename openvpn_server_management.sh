@@ -32,7 +32,7 @@ set -u
 #  - IPv6 support, firewall configuration, monitoring                         #
 ###############################################################################
 
-readonly SCRIPT_VERSION="v2.5.0"
+readonly SCRIPT_VERSION="v2.6.0"
 
 ################################################################################
 #                        USER CONFIGURATION SECTION                            #
@@ -142,6 +142,41 @@ run_cmd() {
         echo "ERROR: Failed to $desc" >&2
         return 1
     fi
+}
+
+################################################################################
+#                        PACKAGE MANAGER ABSTRACTION                           #
+################################################################################
+
+# OpenWRT 25+ uses apk; older versions use opkg. Detect once at startup.
+if command -v apk >/dev/null 2>&1; then
+    PKG_MGR="apk"
+else
+    PKG_MGR="opkg"
+fi
+
+# Update package lists
+pkg_update() {
+    case "$PKG_MGR" in
+        apk)  apk update ;;
+        opkg) opkg update ;;
+    esac
+}
+
+# Install one or more packages
+pkg_install() {
+    case "$PKG_MGR" in
+        apk)  apk add "$@" ;;
+        opkg) opkg install "$@" ;;
+    esac
+}
+
+# Check whether a package is installed (by exact name)
+pkg_is_installed() {
+    case "$PKG_MGR" in
+        apk)  apk list --installed 2>/dev/null | grep -q "^$1 " ;;
+        opkg) opkg list-installed 2>/dev/null | grep -q "^$1 " ;;
+    esac
 }
 
 ################################################################################
@@ -393,12 +428,12 @@ check_dhcpv6_prerequisites() {
 
     # Check if odhcpd is installed
     echo "Checking for odhcpd package..."
-    if opkg list-installed | grep -q "^odhcpd "; then
+    if pkg_is_installed odhcpd; then
         echo "  ✓ odhcpd is installed"
     else
         echo "  ✗ odhcpd is NOT installed"
         echo ""
-        echo "    To install: opkg update && opkg install odhcpd"
+        echo "    To install: pkg_update && pkg_install odhcpd"
         all_ok=0
     fi
 
@@ -2790,19 +2825,20 @@ key_management_first_time() {
 
 }
 
-# Function to install LuCI OpenVPN web interface
-install_luci_openvpn() {
+# Function to install LuCI OpenVPN and File Manager web interface
+install_luci_openvpn_filemanager() {
     local confirm
 
     echo ""
-    echo "=== Install LuCI OpenVPN Web Interface ==="
+    echo "=== Install LuCI OpenVPN and File Manager Web Interface ==="
     echo ""
-    echo "This will install luci-app-openvpn for web-based management"
-    echo "The LuCI app provides:"
+    echo "This will install luci-app-openvpn and luci-app-filemanager"
+    echo "The LuCI apps provide:"
     echo "  - Web interface for managing OpenVPN instances"
     echo "  - Start/stop/restart controls"
     echo "  - Configuration file editing"
     echo "  - Status monitoring"
+    echo "  - File manager for downloading generated client .ovpn files"
     echo ""
     echo "This script and LuCI will share the same UCI configuration"
     echo "Changes made in one will be visible in the other"
@@ -2820,15 +2856,15 @@ install_luci_openvpn() {
 
     echo ""
     echo "Updating package lists..."
-    if ! opkg update; then
+    if ! pkg_update; then
         echo "Error: Failed to update package lists"
         echo "Check your internet connection"
         return 1
     fi
 
     echo ""
-    echo "Installing luci-app-openvpn..."
-    if opkg install luci-app-openvpn; then
+    echo "Installing luci-app-openvpn and luci-app-filemanager..."
+    if pkg_install luci-app-openvpn luci-app-filemanager; then
         echo ""
         echo "Installation complete!"
         echo ""
@@ -2836,6 +2872,9 @@ install_luci_openvpn() {
         echo "  Web Interface > Services > OpenVPN"
         echo "  or"
         echo "  Web Interface > System > OpenVPN"
+        echo ""
+        echo "Access the file manager at:"
+        echo "  Web Interface > System > File Manager"
         echo ""
         echo "Note: You may need to refresh your browser to see the new menu"
     else
@@ -2992,7 +3031,7 @@ ensure_at_installed() {
         echo "Installing 'at' package..."
         echo ""
 
-        if opkg update && opkg install at; then
+        if pkg_update && pkg_install at; then
             echo ""
             echo "'at' utility installed successfully."
 
@@ -3579,6 +3618,43 @@ check_fix_permissions() {
     # Temp file cleaned up automatically by trap
 }
 
+# Function to install core packages needed to run the script
+install_needed_packages() {
+    local confirm
+
+    echo ""
+    echo "=== Install Required Packages ==="
+    echo ""
+    echo "This will install: at, openvpn-openssl, openvpn-easy-rsa"
+    echo ""
+    read -p "Continue with installation? (yes/no): " confirm
+
+    if [ "$confirm" != "yes" ]; then
+        echo "Installation cancelled"
+        return 0
+    fi
+
+    echo ""
+    echo "Updating package lists..."
+    if ! pkg_update; then
+        echo "Error: Failed to update package lists"
+        echo "Check your internet connection"
+        return 1
+    fi
+
+    echo ""
+    echo "Installing at, openvpn-openssl, openvpn-easy-rsa..."
+    if pkg_install at openvpn-openssl openvpn-easy-rsa; then
+        echo ""
+        echo "Installation complete!"
+        echo ""
+    else
+        echo "Error: Installation failed"
+        echo "The package may already be installed or unavailable"
+        return 1
+    fi
+}
+
 # Test guard: skip main menu when sourced for testing
 # Usage: SHELLSPEC_TESTING=true . ./openvpn_server_management.sh
 if [ "${SHELLSPEC_TESTING:-}" = "true" ]; then
@@ -3623,8 +3699,8 @@ while true; do
     echo " 11) Generate single .ovpn config file"
     echo ""
     echo "Setup & Integration:"
-    echo " 12) Install and initialize EasyRSA for OpenVPN"
-    echo " 13) Install LuCI OpenVPN web interface"
+    echo " 12) Initialize EasyRSA for OpenVPN"
+    echo " 13) Install LuCI OpenVPN and File Manager web interface"
     echo ""
     echo "Firewall Management:"
     echo " 14) Check firewall configuration"
@@ -3637,7 +3713,10 @@ while true; do
     echo " 17) Diagnose IPv6 routing issues"
     echo " 18) Check/Fix file permissions"
     echo ""
-    echo " 19) Exit"
+    echo "Package Management:"
+    echo " 19) Install required packages (at, openvpn-openssl, openvpn-easy-rsa)"
+    echo ""
+    echo " 20) Exit"
     echo ""
     read -p "Select an option: " choice
     
@@ -3710,7 +3789,7 @@ while true; do
             key_management_first_time
             ;;
         13)
-            install_luci_openvpn
+            install_luci_openvpn_filemanager
             read -p "Press Enter to continue..."
             ;;
         14)
@@ -3734,6 +3813,10 @@ while true; do
             read -p "Press Enter to continue..."
             ;;
         19)
+            install_needed_packages
+            read -p "Press Enter to continue..."
+            ;;
+        20)
             echo "Exiting..."
             exit 0
             ;;
