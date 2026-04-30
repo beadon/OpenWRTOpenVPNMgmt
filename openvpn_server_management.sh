@@ -206,6 +206,54 @@ validate_instance_name() {
     return 0
 }
 
+# Validate a client certificate name (alphanumeric + underscore + hyphen, non-empty)
+validate_client_name() {
+    local name="$1"
+
+    if [ -z "$name" ]; then
+        echo "Error: Client name cannot be empty" >&2
+        return 1
+    fi
+
+    if ! echo "$name" | grep -qE '^[a-zA-Z0-9_-]+$'; then
+        echo "Error: Client name can only contain letters, numbers, underscores, and hyphens" >&2
+        return 1
+    fi
+
+    return 0
+}
+
+# Validate a non-empty string
+validate_non_empty() {
+    local value="$1"
+    local label="${2:-Value}"
+
+    if [ -z "$value" ]; then
+        echo "Error: $label cannot be empty" >&2
+        return 1
+    fi
+
+    return 0
+}
+
+# Validate a non-negative integer
+validate_non_negative_int() {
+    local value="$1"
+    local label="${2:-Value}"
+
+    if [ -z "$value" ]; then
+        echo "Error: $label cannot be empty" >&2
+        return 1
+    fi
+
+    if ! echo "$value" | grep -qE '^[0-9]+$'; then
+        echo "Error: $label must be a non-negative integer" >&2
+        return 1
+    fi
+
+    return 0
+}
+
 # List all OpenVPN instances from UCI
 list_openvpn_instances() {
     echo ""
@@ -984,7 +1032,9 @@ configure_vpn_firewall() {
     fi
 
     # Commit changes
-    uci commit firewall
+    if ! run_cmd "commit firewall configuration" uci commit firewall; then
+        return 1
+    fi
 
     echo ""
     echo "Firewall configuration updated"
@@ -1469,6 +1519,11 @@ topology subnet
 
 EOF
 
+    if [ ! -s "${OVPN_SERVER_CONF}" ]; then
+        echo "ERROR: Failed to write server configuration to ${OVPN_SERVER_CONF}" >&2
+        return 1
+    fi
+
     # Add IPv6 configuration if enabled
     if [ "$OVPN_IPV6_ENABLE" = "yes" ]; then
         # Warn if DHCPv6 mode is selected (not fully automated yet)
@@ -1573,7 +1628,9 @@ EOF
     ensure_uci_instance "$OVPN_INSTANCE"
     uci set openvpn.${OVPN_INSTANCE}.config="$OVPN_SERVER_CONF"
     uci set openvpn.${OVPN_INSTANCE}.enabled=1
-    uci commit openvpn
+    if ! run_cmd "commit OpenVPN UCI configuration" uci commit openvpn; then
+        return 1
+    fi
     echo "UCI instance '$OVPN_INSTANCE' updated"
     echo ""
 
@@ -2029,8 +2086,7 @@ create_client() {
 
     read -p "Enter client name: " NEW_CLIENT
 
-    if [ -z "$NEW_CLIENT" ]; then
-        echo "Error: Client name cannot be empty"
+    if ! validate_client_name "$NEW_CLIENT"; then
         return 1
     fi
 
@@ -2092,8 +2148,7 @@ revoke_client() {
     echo ""
     read -p "Enter client name to revoke: " CLIENT_TO_REVOKE
 
-    if [ -z "$CLIENT_TO_REVOKE" ]; then
-        echo "Error: No client name entered"
+    if ! validate_client_name "$CLIENT_TO_REVOKE"; then
         return 1
     fi
 
@@ -2104,7 +2159,7 @@ revoke_client() {
 
     echo ""
     echo "WARNING: You are about to revoke certificate for: $CLIENT_TO_REVOKE"
-    read -p "Are you sure? (yes/no): " confirm
+    read -t 30 -p "Are you sure? (yes/no, 30s timeout): " confirm
     
     case $confirm in
         yes)
@@ -2770,7 +2825,7 @@ configure_performance() {
             echo ""
             read -p "Enter bandwidth limit (bytes/sec): " new_limit
 
-            if [ -n "$new_limit" ] && [ "$new_limit" -ge 0 ] 2>/dev/null; then
+            if validate_non_negative_int "$new_limit" "Bandwidth limit"; then
                 OVPN_BANDWIDTH_LIMIT="$new_limit"
                 echo ""
                 if [ "$OVPN_BANDWIDTH_LIMIT" -gt 0 ]; then
@@ -2781,7 +2836,7 @@ configure_performance() {
                 fi
                 echo "Note: Regenerate server.conf (option 1) to apply changes"
             else
-                echo "Invalid number. No changes made."
+                echo "No changes made."
             fi
             ;;
         *)
@@ -3230,7 +3285,7 @@ control_openvpn_server() {
             else
                 echo ""
                 echo "WARNING: This will disconnect all connected VPN clients."
-                read -p "Stop OpenVPN server? (yes/no): " confirm
+                read -t 30 -p "Stop OpenVPN server? (yes/no, 30s timeout): " confirm
                 if [ "$confirm" = "yes" ]; then
                     echo ""
                     echo "Stopping OpenVPN server instance: $OVPN_INSTANCE"
@@ -3293,19 +3348,23 @@ control_openvpn_server() {
             echo ""
             echo "Enabling OpenVPN server to start on boot..."
             uci set openvpn.${OVPN_INSTANCE}.enabled='1'
-            uci commit openvpn
+            if ! run_cmd "commit OpenVPN UCI configuration" uci commit openvpn; then
+                break
+            fi
             /etc/init.d/openvpn enable
             echo ""
             echo "OpenVPN instance '$OVPN_INSTANCE' will now start automatically on boot."
             ;;
         6)
             echo ""
-            read -p "Disable OpenVPN server from starting on boot? (yes/no): " confirm
+            read -t 30 -p "Disable OpenVPN server from starting on boot? (yes/no, 30s timeout): " confirm
             if [ "$confirm" = "yes" ]; then
                 echo ""
                 echo "Disabling OpenVPN server from starting on boot..."
                 uci set openvpn.${OVPN_INSTANCE}.enabled='0'
-                uci commit openvpn
+                if ! run_cmd "commit OpenVPN UCI configuration" uci commit openvpn; then
+                    break
+                fi
                 echo ""
                 echo "OpenVPN instance '$OVPN_INSTANCE' will NOT start automatically on boot."
                 echo "Note: Server is still running if it was already started."

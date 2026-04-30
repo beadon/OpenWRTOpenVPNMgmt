@@ -1,0 +1,5 @@
+# ShellSpec release checksum — update when bumping SHELLSPEC_VERSION in test.yml
+# Source: https://github.com/shellspec/shellspec/releases/tag/0.28.1
+# Verified: 2026-04-29
+# Command used to generate: sha256sum shellspec-dist.tar.gz
+350d3de04ba61505c54eda31a3c2ee912700f1758b1a80a284bc08fd8b6c5992  shellspec-dist.tar.gz

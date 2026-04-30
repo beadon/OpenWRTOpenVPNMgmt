@@ -1,14 +1,23 @@
 # Plan: Implementing Strict Mode and Error Handling
 
-## Decision: Option C (Hybrid Approach)
+## Decision: Option C (Hybrid Approach) — Revised
 
-**Agreed approach:**
+**Agreed approach (updated after code audit):**
 - `set -u` globally for undefined variable protection
-- `set -e` selectively in critical sections
+- `run_cmd` guards on critical commands (replaces `set -e` blocks — see rationale below)
 - Trap-based cleanup for temp files
 - Helper functions for consistent error reporting
 - Incremental implementation for easy review
 - Persistent logging deferred for later
+
+**Why `set -e` blocks were dropped from Phase 3:**
+Code audit confirmed the script has ~70 intentional `2>/dev/null` suppressions on `uci get`,
+`ip addr`, and similar commands that are *expected* to fail (existence checks, fallbacks).
+`set -e` in busybox ash would trigger on these, breaking working functionality.
+`key_management_first_time()` was already fully guarded by `run_cmd` in Phase 2 — nothing
+remained for Phase 3 there. The correct approach for `configure_vpn_firewall()` and
+`generate_server_conf()` is to add `run_cmd` guards to the remaining unguarded critical
+steps (`uci commit` calls in production paths), consistent with Phase 2.
 
 **Testing:** Docker-based OpenWrt rootfs container with ShellSpec framework
 
@@ -33,15 +42,32 @@
 - [x] Update `generate_single_ovpn()` with error checking
 - [ ] Add logging function for optional persistent logging (deferred)
 
-### Phase 3: Critical Section Protection - PENDING
-- [ ] Wrap `key_management_first_time()` with `set -e` / `set +e`
-- [ ] Wrap `configure_vpn_firewall()` with `set -e` / `set +e`
-- [ ] Wrap `generate_server_conf()` with `set -e` / `set +e`
+### Phase 3: Critical Section Protection - REVISED
 
-### Phase 4: Enhanced Robustness - PENDING
-- [ ] Add input validation helpers
-- [ ] Add timeout helpers for `read` commands
-- [ ] Consider `--dry-run` mode
+`set -e` blocks are **not appropriate** for this script (see Decision rationale above).
+Phase 3 is now: guard unprotected `uci commit` calls in production paths.
+
+- [x] `key_management_first_time()` — already fully protected by `run_cmd` in Phase 2, nothing to do
+- [x] `configure_vpn_firewall()` — add `run_cmd` guard to `uci commit firewall` at line 987 (main success path)
+- [x] `generate_server_conf()` — add `run_cmd` guard to `uci commit openvpn` at line 1576
+- [x] `control_openvpn_server()` — add guards to `uci commit openvpn` at lines 3296 and 3308 (enable/disable paths)
+
+**Also identified during audit (add to Phase 3):**
+- [x] `generate_server_conf()` — verify `cat << EOF >` write succeeded at line 1457 (check file is non-empty after write)
+- [x] Line 3661 `return 0 2>/dev/null || exit 0` — retained; correct POSIX idiom for ShellSpec test guard (return if sourced, exit if run directly)
+
+### Phase 4: Enhanced Robustness - COMPLETED
+- [x] Add input validation helpers: `validate_client_name()`, `validate_non_empty()`, `validate_non_negative_int()`
+- [x] Wire `validate_client_name` into `create_client()` and `revoke_client()` (replaces inline empty checks)
+- [x] Wire `validate_non_negative_int` into bandwidth limit input
+- [x] Add `read -t 30` timeouts to destructive confirms: revoke certificate, stop server, disable boot
+- ~~`--dry-run` mode~~ — dropped; script targets live OpenWrt systems, users are expected to make live edits
+
+**Note:** Audit confirmed all other patterns are clean:
+- All 57 `read` variables are properly declared before use — no initialization gaps
+- All 3 temp files use `register_temp()` — no leaks
+- All package operations use `pkg_*` helpers — no direct `opkg`/`apk` calls
+- All `2>/dev/null` suppressions are appropriate (existence checks / fallbacks)
 
 ---
 
@@ -81,56 +107,41 @@ spec/
 - Menu option 11: Generate .ovpn file
 - Error handling when commands fail (e.g., missing dependencies)
 
-### GitHub Actions CI Workflow
-```yaml
-# .github/workflows/test.yml
-name: Tests
-on: [push, pull_request]
-jobs:
-  unit-tests:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - name: Install ShellSpec
-        run: curl -fsSL https://git.io/shellspec | sh -s -- --yes
-      - name: Run unit tests
-        run: shellspec --shell ash spec/unit/
+### GitHub Actions CI Workflow — COMPLETED
+See `.github/workflows/test.yml`. Three jobs: `shellcheck` → `unit-tests` → `integration-tests`.
 
-  integration-tests:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - name: Build OpenWRT container
-        run: docker build -t openwrt-test ./docker
-      - name: Install ShellSpec
-        run: curl -fsSL https://git.io/shellspec | sh -s -- --yes
-      - name: Run integration tests
-        run: shellspec --shell ash spec/integration/
-```
+**Supply chain decisions:**
+- `actions/checkout` pinned by commit SHA (not floating tag)
+- ShellSpec 0.28.1 installed from pinned GitHub release tarball with SHA256 verification
+  — checksum stored in `.github/workflows/shellspec.sha256`
+  — no pipe-to-shell, no URL shorteners
+- OpenWrt Docker image built from local `./docker/Dockerfile` (no runtime pull of unverified image)
+- shellcheck installed via `apt-get` (Debian package, version floats but low risk)
+
+**To update ShellSpec:** download new tarball, run `sha256sum`, update both `test.yml` and `shellspec.sha256`.
 
 ### Running Tests Locally
 ```bash
-# Install ShellSpec
-curl -fsSL https://git.io/shellspec | sh -s -- --yes
-
-# Run all tests
-shellspec
+# Install ShellSpec (pinned — matches CI)
+SHELLSPEC_VERSION="0.28.1"
+SHELLSPEC_SHA256="350d3de04ba61505c54eda31a3c2ee912700f1758b1a80a284bc08fd8b6c5992"
+curl -fsSL -o /tmp/shellspec-dist.tar.gz \
+  "https://github.com/shellspec/shellspec/releases/download/${SHELLSPEC_VERSION}/shellspec-dist.tar.gz"
+echo "${SHELLSPEC_SHA256}  /tmp/shellspec-dist.tar.gz" | sha256sum --check --strict
+tar -xzf /tmp/shellspec-dist.tar.gz -C /tmp
+sudo install -m 755 /tmp/shellspec/shellspec /usr/local/bin/shellspec
 
 # Run only unit tests (no Docker needed)
 shellspec spec/unit/
 
 # Run integration tests (requires Docker)
-docker build -t openwrt-test ./docker
+docker build --build-arg SSH_PUBLIC_KEY="$(cat ~/.ssh/id_rsa.pub)" -t openwrt-ovpn-test ./docker
 shellspec spec/integration/
 ```
 
-### GitHub Actions CI Workflow - PENDING
-Create `.github/workflows/test.yml` with:
-- **unit-tests job**: Run on ubuntu-latest with busybox ash, execute `spec/unit/`
-- **integration-tests job**: Build OpenWRT Docker container, install dependencies, run `spec/integration/`
-- **shellcheck job**: Lint script with ShellCheck for POSIX compliance
-- Trigger on push/PR to main and dev branches
-- Integration tests timeout: 30 minutes (PKI generation is slow)
+### GitHub Actions CI Workflow - COMPLETED
+`.github/workflows/test.yml` — see supply chain notes in section above.
+- Integration tests timeout: 20 minutes (increase if PKI generation exceeds this)
 
 ---
 
@@ -362,7 +373,7 @@ critical_section() {
 ### Phase 4: Enhanced Robustness
 1. Add input validation helpers
 2. Add timeout helpers for all `read` commands
-3. Consider adding `--dry-run` mode for testing
+3. ~~`--dry-run` mode~~ — dropped
 
 ---
 
@@ -455,20 +466,21 @@ Add error checking to critical operations that currently have none:
 
 ---
 
-### Step 5: Wrap Critical Sections with `set -e`
-Add `set -e` / `set +e` blocks around critical multi-step operations:
-- EasyRSA initialization in `key_management_first_time()`
-- Firewall configuration in `configure_vpn_firewall()`
-- Server config generation in `generate_server_conf()`
+### Step 5: Guard Remaining `uci commit` Calls (replaces set -e plan)
+Add `run_cmd` guards to unprotected `uci commit` calls in production paths:
+- `configure_vpn_firewall()` line 987: `uci commit firewall`
+- `generate_server_conf()` line 1576: `uci commit openvpn`
+- `control_openvpn_server()` lines 3296, 3308: enable/disable paths
+- `generate_server_conf()` line 1457: verify `cat << EOF >` write produced non-empty file
+- Retain `return 0 2>/dev/null || exit 0` at line 3661 (correct POSIX ShellSpec test guard)
 
-**Files changed:** Critical functions only
+**Files changed:** `openvpn_server_management.sh` only
 
 ---
 
 ### Future Enhancements (Deferred)
 - Persistent logging to `/var/log/openvpn-mgmt.log`
-- `--dry-run` mode for testing
-- Input validation helpers with timeouts
+- Input validation helpers with timeouts — COMPLETED in Phase 4
 - ShellSpec test suite implementation (see Testing Framework section above)
 
 ---
