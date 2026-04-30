@@ -558,11 +558,65 @@ Per [OpenWRT Code Style Guide](https://openwrt.org/code_style_guide):
 - Validate with `shellcheck` for POSIX conformance
 - Avoid bash-specific features
 
-### CRL Auto-Regeneration (Community Request)
-From OpenWRT Forum (lantis1008):
-- EasyRSA CRL expires after 180 days by default
-- Add auto-detection and fix functionality
-- Consider menu option for manual regeneration
+### CRL Auto-Regeneration (Community Request) — COMPLETED in v2.7.0
+- check_crl_expiry(), enable_crl_verify(), renew_crl(), schedule_crl_renewal()
+- Daily cron at 03:00, startup alert banner, r) menu option
+
+---
+
+## Feature Plan: Cryptography Hardening
+
+### Background
+The script currently sets no explicit crypto parameters, falling back to EasyRSA and
+OpenVPN defaults: RSA 2048-bit keys, 2048-bit DH parameters, no TLS minimum version,
+no explicit data cipher. These defaults are functional but dated for new deployments.
+
+EasyRSA 3.x (shipped with `openvpn-easy-rsa` on OpenWrt) supports EC keys natively via
+`EASYRSA_ALGO=ec` — same commands, no tooling change. EC eliminates the `gen-dh` step
+entirely (ECDH is intrinsic to the curve), which meaningfully speeds up PKI init on
+CPU-limited router hardware.
+
+### Decisions
+- **EC is the default** — `prime256v1` curve (NIST P-256); strong, fast, widely supported
+  in OpenVPN 2.4+ clients
+- **RSA is the compatibility option** — user-selectable 2048-bit (minimum, broad compat)
+  or 4096-bit (maximum, slower on constrained hardware); 2048 is the lowest permitted
+- **TLS hardening** — add `tls-version-min 1.2` and explicit `data-ciphers AES-256-GCM`
+  to generated `server.conf` regardless of key type
+
+### Phase 1: Config Section and PKI Init — PENDING
+- [ ] Add `OVPN_CRYPTO_ALGO` to user config section (default: `ec`)
+- [ ] Add `OVPN_CRYPTO_CURVE` to user config section (default: `prime256v1`)
+- [ ] Add `OVPN_RSA_KEY_SIZE` to user config section (default: `2048`, options: `2048`, `4096`)
+- [ ] Update `key_management_first_time()`:
+  - EC path: set `EASYRSA_ALGO=ec`, `EASYRSA_CURVE`, remove `gen-dh` call
+  - RSA path: set `EASYRSA_ALGO=rsa`, `EASYRSA_KEY_SIZE`, keep `gen-dh`
+  - Print selected algorithm and parameters before proceeding
+
+### Phase 2: server.conf Hardening — PENDING
+- [ ] Add `tls-version-min 1.2` to generated `server.conf`
+- [ ] Add `data-ciphers AES-256-GCM` to generated `server.conf`
+- [ ] EC path: remove `dh` directive from server.conf (not needed with ECDH)
+- [ ] RSA path: keep `dh` directive pointing to `dh.pem`
+
+### Phase 3: Menu Options — PENDING
+- [ ] Add `k) Configure crypto settings` under Setup & Integration in main menu
+- [ ] `configure_crypto()` function — sub-menu:
+  - Show current algorithm and parameters
+  - `1) Use EC keys (default, recommended)` — set `prime256v1`
+  - `2) Use RSA keys (compatibility)` — prompt for 2048 or 4096
+  - Warn if changing after PKI is already initialized (requires full PKI reinit)
+- [ ] Add crypto summary line to PKI init output so admin knows what was generated
+
+### Phase 4: Documentation — PENDING
+- [ ] Update README: explain EC vs RSA choice, compatibility note for pre-2.4 clients
+- [ ] Update README: note that `gen-dh` is skipped for EC (faster init)
+- [ ] Bump version to v2.8.0 on completion
+
+### Compatibility Note
+RSA 2048-bit is the minimum permitted — no option for smaller sizes.
+Pre-OpenVPN 2.4 clients (~2017 and earlier) do not support EC certificates.
+For self-managed deployments with modern clients, EC is always the right choice.
 
 ### IPv6 ULA Range Review (Pending Testing)
 Issues identified during testing with IPv6 configuration:
