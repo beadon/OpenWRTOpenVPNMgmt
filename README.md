@@ -1,11 +1,22 @@
 # OpenWRT OpenVPN Server Management
 
-**Version: v2.6.0**
+**Version: v2.7.0**
 
 Openwrt VPN setup and management script, making management of Open VPN via CLI much simpler.
 
 The All-in-One OpenVPN Management Script
 Tired of managing keys, ovpn files and all different parts piecemeal? Use this script on the CLI to manage it all.
+
+## What's New in v2.7.0
+
+- **CRL Auto-Renewal** - Daily cron job automatically renews the Certificate Revocation List before it expires; prevents the silent outage where an expired CRL locks out all VPN clients including valid ones
+- **CRL Management Menu** - New `r) CRL management` option: check expiry, renew manually, install/remove/status of auto-renewal cron job
+- **Automatic `crl-verify` Activation** - First client revocation now automatically enables `crl-verify` in `server.conf` and installs the renewal cron job in one step
+- **Startup CRL Alert** - Script warns at launch if CRL is expired or within 30 days of expiry
+- **Input Validation** - `validate_client_name()`, `validate_non_negative_int()` helpers; client name and bandwidth inputs now validated consistently
+- **Destructive Action Timeouts** - 30-second `read` timeout on revoke, stop server, and disable boot confirmations
+- **Error Hardening** - `run_cmd` guards on all `uci commit` calls in production paths; server.conf write verified non-empty after generation
+- **GitHub Actions CI** - Automated ShellCheck, unit tests (busybox ash), and integration tests; ShellSpec 0.28.1 installed from pinned tarball with SHA256 verification (no pipe-to-shell)
 
 ## What's New in v2.6.0
 
@@ -36,6 +47,8 @@ Tired of managing keys, ovpn files and all different parts piecemeal? Use this s
   - [LuCI Integration](#luci-integration)
   - [OpenVPN Monitoring](#openvpn-monitoring)
 - [Quick Reference - Common Operations](#quick-reference---common-operations)
+  - [Revoke a Client Certificate](#revoke-a-client-certificate)
+  - [Manage CRL (Certificate Revocation List)](#manage-crl-certificate-revocation-list)
 - [Troubleshooting](#troubleshooting)
 - [Advanced Usage](#advanced-usage)
 - [IPv6 VPN Tunnel Setup](#ipv6-vpn-tunnel-setup)
@@ -617,9 +630,42 @@ Enter new instance name: office_vpn
 ```
 6) Revoke client certificate
 Enter client name to revoke: laptop
-Are you sure? (yes/no): yes
+Are you sure? (yes/no, 30s timeout): yes
+Revoking certificate for laptop...
+Generating Certificate Revocation List (CRL)...
+Enabling crl-verify in server.conf...
+  Enabled crl-verify in /etc/openvpn/server.conf
+  Installing daily CRL auto-renewal cron job...
+  CRL renewal cron job installed (daily at 03:00).
 Restart OpenVPN daemon to apply changes? (y/n): y
 ```
+
+On first revocation the script automatically:
+1. Generates `crl.pem`
+2. Uncomments `crl-verify` in `server.conf`
+3. Installs a daily cron job to renew the CRL before it expires
+
+### Manage CRL (Certificate Revocation List)
+
+**Menu Option: r**
+
+> **Why this matters:** EasyRSA CRLs expire after 180 days by default. When a CRL expires,
+> OpenVPN rejects **all** client connections — including valid, unrevoked ones. The script
+> automatically installs a daily renewal cron job on first revocation, but you can manage it manually here.
+
+```
+r) CRL management (check/renew/auto-renewal)
+
+=== CRL Management ===
+  1) Check CRL expiry status
+  2) Renew CRL now
+  3) Auto-renewal cron job status
+  4) Install auto-renewal cron job
+  5) Remove auto-renewal cron job
+```
+
+The auto-renewal cron job runs daily at 03:00 and logs to `/tmp/openvpn-crl-renewal.log`.
+The script also warns at startup if the CRL is expired or within 30 days of expiry.
 
 ### Check Certificate Expiration
 
@@ -1694,53 +1740,81 @@ logread | grep "odhcpd.*vpn"
 
 ## Development and Testing
 
-A Docker-based OpenWRT test environment is available for development and testing.
+### Automated CI
 
-### Prerequisites
+GitHub Actions runs three jobs on every push and PR to `main` and `dev`:
 
-- Docker installed on a Linux system
+- **shellcheck** — lints the script for POSIX compliance
+- **unit-tests** — runs `spec/unit/` under busybox ash (no Docker needed)
+- **integration-tests** — builds the OpenWrt Docker container and runs `spec/integration/`
+
+ShellSpec 0.28.1 is installed from a pinned GitHub release tarball with SHA256 verification.
+See `.github/workflows/shellspec.sha256` for the recorded checksum.
+
+### Real Device Testing
+
+The authoritative test environment is a physical OpenWrt device. Features that cannot be
+tested in Docker (firewall rules, `crond`, service management, actual VPN tunnel) require
+a real device.
+
+```bash
+# Copy script to device
+scp openvpn_server_management.sh root@<router-ip>:/root/
+
+# Run on device
+ssh root@<router-ip> '/root/openvpn_server_management.sh'
+```
+
+### Docker Test Container
+
+A Docker-based OpenWrt rootfs is available for PKI, certificate, and CRL testing.
+Note: firewall configuration and service management are not testable in this environment.
+
+#### Prerequisites
+
+- Docker installed
 - SSH public key at `~/.ssh/id_rsa.pub`
 
-### Build the Test Container
+#### Build and Run
 
 ```bash
 docker build --build-arg SSH_PUBLIC_KEY="$(cat ~/.ssh/id_rsa.pub)" -t openwrt-ovpn-test ./docker
-```
-
-### Run the Container
-
-```bash
 docker run -it --name openwrt-test -p 2222:22 openwrt-ovpn-test
 ```
 
-This starts an interactive shell that keeps the container alive.
-
-### Connect via SSH
-
-From a separate terminal:
+#### Connect and Test
 
 ```bash
+# From a separate terminal
 ssh root@localhost -p 2222
-```
 
-### Test the Script
-
-```bash
-# Copy script to container
+# Copy and run script
 scp -P 2222 openvpn_server_management.sh root@localhost:/root/
-
-# Run via SSH
 ssh root@localhost -p 2222 '/root/openvpn_server_management.sh'
 ```
 
-### Stop the Container
-
-Exit the interactive shell with `Ctrl+D` or `exit`.
-
-### Cleanup
+#### Install ShellSpec Locally (matches CI, no pipe-to-shell)
 
 ```bash
-docker rm openwrt-test
+SHELLSPEC_VERSION="0.28.1"
+SHELLSPEC_SHA256="350d3de04ba61505c54eda31a3c2ee912700f1758b1a80a284bc08fd8b6c5992"
+curl -fsSL -o /tmp/shellspec-dist.tar.gz \
+  "https://github.com/shellspec/shellspec/releases/download/${SHELLSPEC_VERSION}/shellspec-dist.tar.gz"
+echo "${SHELLSPEC_SHA256}  /tmp/shellspec-dist.tar.gz" | sha256sum --check --strict
+tar -xzf /tmp/shellspec-dist.tar.gz -C /tmp
+sudo install -m 755 /tmp/shellspec/shellspec /usr/local/bin/shellspec
+
+# Run unit tests (no Docker needed)
+shellspec spec/unit/
+
+# Run integration tests (requires Docker container running)
+shellspec spec/integration/
+```
+
+#### Cleanup
+
+```bash
+docker rm -f openwrt-test
 ```
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for development guidelines and commit message standards.
