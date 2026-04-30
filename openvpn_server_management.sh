@@ -57,6 +57,7 @@ OVPN_IPV6_POOL_SIZE="253"                # Max IPv6 clients (for tracking)
 # Directory Paths
 OVPN_PKI="/etc/easy-rsa/pki"             # PKI directory for certificates
 OVPN_DIR="/root/ovpn_config_out"         # Output directory for client configs
+OVPN_CRL_LOG="/tmp/openvpn-crl-renewal.log"  # CRL auto-renewal log (volatile, lost on reboot)
 
 ################################################################################
 #                   ADVANCED CONFIGURATION (Auto-detected)                     #
@@ -1780,6 +1781,189 @@ check_expiration() {
     echo ""
 }
 
+# Check CRL expiry status; prints warning if within threshold or expired.
+# Returns: 0=ok, 1=no CRL, 2=expired, 3=expiring soon
+check_crl_expiry() {
+    local crl_file="${OVPN_PKI}/crl.pem"
+    local warn_days="${1:-30}"
+    local next_update
+    local exp_date
+    local current_date
+    local days_left
+
+    if [ ! -f "$crl_file" ]; then
+        return 1
+    fi
+
+    next_update=$(openssl crl -in "$crl_file" -noout -nextupdate 2>/dev/null | cut -d= -f2)
+    if [ -z "$next_update" ]; then
+        echo "WARNING: Could not parse CRL expiry date from $crl_file" >&2
+        return 1
+    fi
+
+    exp_date=$(date -d "$next_update" +%s 2>/dev/null || \
+               date -j -f "%b %d %H:%M:%S %Y %Z" "$next_update" +%s 2>/dev/null)
+    if [ -z "$exp_date" ]; then
+        echo "WARNING: Could not convert CRL expiry date" >&2
+        return 1
+    fi
+
+    current_date=$(date +%s)
+    days_left=$(( (exp_date - current_date) / 86400 ))
+
+    if [ "$days_left" -lt 0 ]; then
+        echo "  [EXPIRED] CRL expired $((days_left * -1)) days ago — OpenVPN will reject ALL connections"
+        return 2
+    elif [ "$days_left" -lt "$warn_days" ]; then
+        echo "  [WARNING] CRL expires in $days_left days — renew before it expires"
+        return 3
+    else
+        echo "  [OK]      CRL valid for $days_left days"
+        return 0
+    fi
+}
+
+# Uncomment crl-verify in server.conf if it is currently commented out.
+# Called automatically after the first successful revocation.
+enable_crl_verify() {
+    local conf="$OVPN_SERVER_CONF"
+
+    if [ ! -f "$conf" ]; then
+        warn "server.conf not found at $conf — cannot enable crl-verify automatically"
+        return 1
+    fi
+
+    if grep -q "^crl-verify " "$conf"; then
+        echo "  crl-verify already enabled in $conf"
+        return 0
+    fi
+
+    if grep -q "^# crl-verify " "$conf"; then
+        sed -i 's|^# crl-verify |crl-verify |' "$conf"
+        echo "  Enabled crl-verify in $conf"
+        echo "  Installing daily CRL auto-renewal cron job..."
+        schedule_crl_renewal install
+        return 0
+    fi
+
+    warn "crl-verify line not found in $conf — add it manually: crl-verify ${OVPN_PKI}/crl.pem"
+    return 1
+}
+
+# Renew the CRL and optionally restart OpenVPN to pick it up
+renew_crl() {
+    local restart
+
+    echo ""
+    echo "=== Renew Certificate Revocation List ==="
+    echo ""
+
+    if [ ! -f "${OVPN_PKI}/crl.pem" ]; then
+        echo "No CRL found at ${OVPN_PKI}/crl.pem"
+        echo "A CRL is created automatically when you first revoke a client certificate."
+        return 1
+    fi
+
+    echo "Current CRL status:"
+    check_crl_expiry
+    echo ""
+
+    export EASYRSA_PKI="${OVPN_PKI}"
+    export EASYRSA_TEMP_DIR="/tmp"
+
+    echo "Regenerating CRL..."
+    if ! run_cmd "regenerate CRL" easyrsa gen-crl; then
+        return 1
+    fi
+
+    echo "CRL renewed: ${OVPN_PKI}/crl.pem"
+    echo ""
+    echo "New CRL status:"
+    check_crl_expiry
+    echo ""
+
+    read -p "Restart OpenVPN to apply renewed CRL? (y/n): " restart
+    if [ "$restart" = "y" ] || [ "$restart" = "Y" ]; then
+        safe_restart_openvpn "$OVPN_INSTANCE"
+    else
+        echo "Remember to restart OpenVPN for the renewed CRL to take effect."
+    fi
+}
+
+# Manage the daily cron job that auto-renews the CRL.
+# Usage: schedule_crl_renewal [install|remove|status]
+schedule_crl_renewal() {
+    local action="${1:-status}"
+    local crontab_file="/etc/crontabs/root"
+    local cron_marker="# openvpn-crl-renewal"
+    # Daily at 03:00 — low-traffic time, well within 180-day CRL validity
+    local cron_job="0 3 * * * export EASYRSA_PKI=${OVPN_PKI} EASYRSA_BATCH=1 EASYRSA_TEMP_DIR=/tmp && easyrsa gen-crl >> ${OVPN_CRL_LOG} 2>&1 && echo \"\$(date): CRL renewed OK\" >> ${OVPN_CRL_LOG} || echo \"\$(date): CRL renewal FAILED\" >> ${OVPN_CRL_LOG} ${cron_marker}"
+
+    case "$action" in
+        install)
+            if grep -q "$cron_marker" "$crontab_file" 2>/dev/null; then
+                echo "  CRL renewal cron job already installed."
+                return 0
+            fi
+
+            # Ensure crontab file and directory exist
+            mkdir -p "$(dirname "$crontab_file")"
+            touch "$crontab_file"
+
+            echo "$cron_job" >> "$crontab_file"
+
+            # Reload crond to pick up the new entry
+            /etc/init.d/cron reload 2>/dev/null || /etc/init.d/cron restart 2>/dev/null || true
+
+            echo "  CRL renewal cron job installed (daily at 03:00)."
+            echo "  Log: ${OVPN_CRL_LOG} (cleared on reboot)"
+            echo "  To view: cat ${OVPN_CRL_LOG}"
+            ;;
+
+        remove)
+            if ! grep -q "$cron_marker" "$crontab_file" 2>/dev/null; then
+                echo "  No CRL renewal cron job found."
+                return 0
+            fi
+
+            # Remove the line containing the marker
+            sed -i "/$cron_marker/d" "$crontab_file"
+
+            /etc/init.d/cron reload 2>/dev/null || /etc/init.d/cron restart 2>/dev/null || true
+
+            echo "  CRL renewal cron job removed."
+            echo "  WARNING: CRL will no longer be auto-renewed. Monitor expiry manually."
+            ;;
+
+        status)
+            echo ""
+            echo "=== CRL Auto-Renewal Cron Job ==="
+            if grep -q "$cron_marker" "$crontab_file" 2>/dev/null; then
+                echo "  Status:   INSTALLED (daily at 03:00)"
+                echo "  Log:      ${OVPN_CRL_LOG}"
+                if [ -f "${OVPN_CRL_LOG}" ]; then
+                    echo ""
+                    echo "  Recent log entries:"
+                    tail -5 "${OVPN_CRL_LOG}" | sed 's/^/    /'
+                else
+                    echo "  Log file not yet created (first run pending or lost after reboot)."
+                fi
+            else
+                echo "  Status:   NOT INSTALLED"
+                if [ -f "${OVPN_PKI}/crl.pem" ]; then
+                    local crl_expiry_msg
+                    crl_expiry_msg=$(check_crl_expiry 999)
+                    echo "  Current:  ${crl_expiry_msg# }"
+                fi
+                echo "  WARNING:  Without auto-renewal the CRL will expire and OpenVPN will"
+                echo "            reject ALL client connections — even valid, unrevoked ones."
+                echo "            Install the cron job (option 4) to prevent this."
+            fi
+            echo ""
+            ;;
+    esac
+}
+
 # Function to show certificate details
 show_cert_details() {
     local counter
@@ -2177,7 +2361,8 @@ revoke_client() {
             echo "Certificate revoked successfully."
             echo "CRL updated at: ${OVPN_PKI}/crl.pem"
             echo ""
-            echo "NOTE: Ensure 'crl-verify' is enabled in your server.conf"
+            echo "Enabling crl-verify in server.conf..."
+            enable_crl_verify
             echo ""
             
             read -p "Restart OpenVPN daemon to apply changes? (y/n): " response
@@ -3723,6 +3908,23 @@ fi
 # Clear terminal at startup for clean display
 reset
 
+# Warn on startup if CRL is expired or expiring within 30 days
+if [ -f "${OVPN_PKI}/crl.pem" ]; then
+    crl_status=$(check_crl_expiry 30)
+    crl_rc=$?
+    if [ $crl_rc -ge 2 ]; then
+        echo ""
+        echo "=========================================="
+        echo "  CRL ALERT"
+        echo "=========================================="
+        echo "$crl_status"
+        echo ""
+        echo "  Use option 'r) Renew CRL' from the menu."
+        echo "=========================================="
+        echo ""
+    fi
+fi
+
 # Main menu
 while true; do
     echo ""
@@ -3752,6 +3954,7 @@ while true; do
     echo "  7) Check certificate expiration"
     echo "  8) Renew certificate"
     echo "  9) Show certificate details"
+    echo "  r) CRL management (check/renew/auto-renewal)"
     echo ""
     echo "Client VPN Profiles:"
     echo " 10) Generate all .ovpn config files"
@@ -3828,6 +4031,31 @@ while true; do
             ;;
         9)
             show_cert_details
+            read -p "Press Enter to continue..."
+            ;;
+        r|R)
+            echo ""
+            echo "=== CRL Management ==="
+            echo ""
+            echo "  1) Check CRL expiry status"
+            echo "  2) Renew CRL now"
+            echo "  3) Auto-renewal cron job status"
+            echo "  4) Install auto-renewal cron job"
+            echo "  5) Remove auto-renewal cron job"
+            echo ""
+            read -p "Select option: " crl_choice
+            case "$crl_choice" in
+                1)
+                    echo ""
+                    echo "CRL status:"
+                    check_crl_expiry
+                    ;;
+                2) renew_crl ;;
+                3) schedule_crl_renewal status ;;
+                4) schedule_crl_renewal install ;;
+                5) schedule_crl_renewal remove ;;
+                *) echo "Cancelled." ;;
+            esac
             read -p "Press Enter to continue..."
             ;;
         10)
