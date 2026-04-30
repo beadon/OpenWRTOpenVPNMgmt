@@ -584,29 +584,23 @@ CPU-limited router hardware.
 - **TLS hardening** — add `tls-version-min 1.2` and explicit `data-ciphers AES-256-GCM`
   to generated `server.conf` regardless of key type
 
-### Phase 1: Config Section and PKI Init — PENDING
-- [ ] Add `OVPN_CRYPTO_ALGO` to user config section (default: `ec`)
-- [ ] Add `OVPN_CRYPTO_CURVE` to user config section (default: `prime256v1`)
-- [ ] Add `OVPN_RSA_KEY_SIZE` to user config section (default: `2048`, options: `2048`, `4096`)
-- [ ] Update `key_management_first_time()`:
-  - EC path: set `EASYRSA_ALGO=ec`, `EASYRSA_CURVE`, remove `gen-dh` call
-  - RSA path: set `EASYRSA_ALGO=rsa`, `EASYRSA_KEY_SIZE`, keep `gen-dh`
-  - Print selected algorithm and parameters before proceeding
+### Phase 1: Config Section and PKI Init — COMPLETED
+- [x] Add `OVPN_CRYPTO_ALGO` to user config section (default: `ec`)
+- [x] Add `OVPN_CRYPTO_CURVE` to user config section (default: `prime256v1`)
+- [x] Add `OVPN_RSA_KEY_SIZE` to user config section (default: `2048`, options: `2048`, `4096`)
+- [x] Update `key_management_first_time()`: EC path skips gen-dh; RSA path keeps it with size message
 
-### Phase 2: server.conf Hardening — PENDING
-- [ ] Add `tls-version-min 1.2` to generated `server.conf`
-- [ ] Add `data-ciphers AES-256-GCM` to generated `server.conf`
-- [ ] EC path: remove `dh` directive from server.conf (not needed with ECDH)
-- [ ] RSA path: keep `dh` directive pointing to `dh.pem`
+### Phase 2: server.conf Hardening — COMPLETED
+- [x] Add `tls-version-min 1.2` to generated `server.conf`
+- [x] Add `data-ciphers AES-256-GCM` to generated `server.conf`
+- [x] EC path: `dh none` in server.conf
+- [x] RSA path: `dh ${OVPN_PKI}/dh.pem`
 
-### Phase 3: Menu Options — PENDING
-- [ ] Add `k) Configure crypto settings` under Setup & Integration in main menu
-- [ ] `configure_crypto()` function — sub-menu:
-  - Show current algorithm and parameters
-  - `1) Use EC keys (default, recommended)` — set `prime256v1`
-  - `2) Use RSA keys (compatibility)` — prompt for 2048 or 4096
-  - Warn if changing after PKI is already initialized (requires full PKI reinit)
-- [ ] Add crypto summary line to PKI init output so admin knows what was generated
+### Phase 3: Menu Options — COMPLETED
+- [x] Add `k) Configure cryptography settings (currently: <algo>)` under Setup & Integration
+- [x] `configure_crypto()`: shows current settings, warns if PKI initialized, EC/RSA selection
+- [x] `show_crypto_summary()`: reusable summary printed at PKI init and configure_crypto
+- [x] PKI init prints algo summary on completion
 
 ### Phase 4: Documentation — PENDING
 - [ ] Update README: explain EC vs RSA choice, compatibility note for pre-2.4 clients

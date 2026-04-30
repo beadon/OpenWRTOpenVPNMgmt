@@ -59,6 +59,19 @@ OVPN_PKI="/etc/easy-rsa/pki"             # PKI directory for certificates
 OVPN_DIR="/root/ovpn_config_out"         # Output directory for client configs
 OVPN_CRL_LOG="/tmp/openvpn-crl-renewal.log"  # CRL auto-renewal log (volatile, lost on reboot)
 
+# Cryptography Settings
+# OVPN_CRYPTO_ALGO: "ec" (recommended, faster on router hardware, requires OpenVPN 2.4+)
+#                   "rsa" (compatibility mode for pre-2.4 clients)
+OVPN_CRYPTO_ALGO="ec"
+# OVPN_CRYPTO_CURVE: EC curve (used when OVPN_CRYPTO_ALGO=ec)
+#   prime256v1 = NIST P-256, strong and widely supported
+#   secp384r1  = NIST P-384, higher security margin, slightly slower
+OVPN_CRYPTO_CURVE="prime256v1"
+# OVPN_RSA_KEY_SIZE: RSA key size in bits (used when OVPN_CRYPTO_ALGO=rsa)
+#   2048 = minimum permitted, broad compatibility
+#   4096 = maximum, slower PKI generation on constrained hardware
+OVPN_RSA_KEY_SIZE="2048"
+
 ################################################################################
 #                   ADVANCED CONFIGURATION (Auto-detected)                     #
 #              No editing required below unless troubleshooting                #
@@ -253,6 +266,85 @@ validate_non_negative_int() {
     fi
 
     return 0
+}
+
+# Display current crypto settings summary
+show_crypto_summary() {
+    if [ "$OVPN_CRYPTO_ALGO" = "ec" ]; then
+        echo "  Algorithm:  EC (${OVPN_CRYPTO_CURVE})"
+        echo "  DH params:  Not required (ECDH intrinsic to curve)"
+    else
+        echo "  Algorithm:  RSA ${OVPN_RSA_KEY_SIZE}-bit"
+        echo "  DH params:  ${OVPN_RSA_KEY_SIZE}-bit (generated at PKI init)"
+    fi
+    echo "  TLS min:    1.2"
+    echo "  Cipher:     AES-256-GCM"
+}
+
+# Interactive menu to configure crypto algorithm and parameters
+configure_crypto() {
+    local choice
+    local curve_choice
+    local size_choice
+
+    echo ""
+    echo "=== Cryptography Settings ==="
+    echo ""
+    echo "Current settings:"
+    show_crypto_summary
+    echo ""
+
+    if [ -d "${OVPN_PKI}/issued" ] && ls "${OVPN_PKI}/issued"/*.crt >/dev/null 2>&1; then
+        echo "  WARNING: PKI already initialized. Changing algorithm requires"
+        echo "  re-running option 12 (Initialize EasyRSA), which will destroy"
+        echo "  all existing certificates and client keys."
+        echo ""
+    fi
+
+    echo "  1) EC keys — recommended (fast, strong, requires OpenVPN 2.4+ clients)"
+    echo "  2) RSA keys — compatibility (for pre-2.4 clients or legacy deployments)"
+    echo "  3) Cancel"
+    echo ""
+    read -p "Select algorithm: " choice
+
+    case "$choice" in
+        1)
+            echo ""
+            echo "  EC curve selection:"
+            echo "    1) prime256v1 — NIST P-256 (recommended, widely supported)"
+            echo "    2) secp384r1  — NIST P-384 (higher security margin, slightly slower)"
+            echo ""
+            read -p "Select curve: " curve_choice
+            case "$curve_choice" in
+                1) OVPN_CRYPTO_ALGO="ec"; OVPN_CRYPTO_CURVE="prime256v1" ;;
+                2) OVPN_CRYPTO_ALGO="ec"; OVPN_CRYPTO_CURVE="secp384r1" ;;
+                *) echo "Cancelled."; return 0 ;;
+            esac
+            echo ""
+            echo "Crypto settings updated:"
+            show_crypto_summary
+            ;;
+        2)
+            echo ""
+            echo "  RSA key size:"
+            echo "    1) 2048-bit — minimum permitted, broad compatibility, faster"
+            echo "    2) 4096-bit — maximum, stronger, slower PKI init on router hardware"
+            echo ""
+            read -p "Select key size: " size_choice
+            case "$size_choice" in
+                1) OVPN_CRYPTO_ALGO="rsa"; OVPN_RSA_KEY_SIZE="2048" ;;
+                2) OVPN_CRYPTO_ALGO="rsa"; OVPN_RSA_KEY_SIZE="4096" ;;
+                *) echo "Cancelled."; return 0 ;;
+            esac
+            echo ""
+            echo "Crypto settings updated:"
+            show_crypto_summary
+            ;;
+        3|*) echo "Cancelled."; return 0 ;;
+    esac
+
+    echo ""
+    echo "Note: Re-run option 12 (Initialize EasyRSA) to apply new settings."
 }
 
 # List all OpenVPN instances from UCI
@@ -1559,9 +1651,24 @@ EOF
 ca ${OVPN_PKI}/ca.crt
 cert ${OVPN_PKI}/issued/server.crt
 key ${OVPN_PKI}/private/server.key
-dh ${OVPN_PKI}/dh.pem
+EOF
 
-# TLS authentication
+    # DH parameters only required for RSA; EC uses ECDH (no dh.pem needed)
+    if [ "$OVPN_CRYPTO_ALGO" != "ec" ]; then
+        cat << EOF >> ${OVPN_SERVER_CONF}
+dh ${OVPN_PKI}/dh.pem
+EOF
+    else
+        cat << EOF >> ${OVPN_SERVER_CONF}
+dh none
+EOF
+    fi
+
+    cat << EOF >> ${OVPN_SERVER_CONF}
+
+# TLS hardening
+tls-version-min 1.2
+data-ciphers AES-256-GCM
 tls-crypt-v2 ${OVPN_PKI}/private/server.pem
 
 # Client configuration
@@ -3040,14 +3147,29 @@ key_management_first_time() {
     export EASYRSA_CERT_EXPIRE="3650"
     export EASYRSA_BATCH="1"
 
+    # Apply crypto algorithm settings
+    if [ "$OVPN_CRYPTO_ALGO" = "ec" ]; then
+        export EASYRSA_ALGO="ec"
+        export EASYRSA_CURVE="${OVPN_CRYPTO_CURVE}"
+        echo "Crypto: EC (${OVPN_CRYPTO_CURVE}) — DH parameters not required"
+    else
+        export EASYRSA_ALGO="rsa"
+        export EASYRSA_KEY_SIZE="${OVPN_RSA_KEY_SIZE}"
+        echo "Crypto: RSA ${OVPN_RSA_KEY_SIZE}-bit"
+    fi
+    echo ""
+
     # Remove and re-initialize PKI directory
     if ! run_cmd "initialize PKI directory" easyrsa init-pki; then
         return 1
     fi
 
-    # Generate DH parameters
-    if ! run_cmd "generate DH parameters" easyrsa gen-dh; then
-        return 1
+    # Generate DH parameters (RSA only — EC uses ECDH, no DH params needed)
+    if [ "$OVPN_CRYPTO_ALGO" != "ec" ]; then
+        echo "Generating DH parameters (${OVPN_RSA_KEY_SIZE}-bit) — this may take several minutes..."
+        if ! run_cmd "generate DH parameters" easyrsa gen-dh; then
+            return 1
+        fi
     fi
 
     # Create a new CA
@@ -3062,6 +3184,10 @@ key_management_first_time() {
     if ! run_cmd "generate TLS-Crypt-v2 server key" openvpn --genkey tls-crypt-v2-server "${EASYRSA_PKI}/private/server.pem"; then
         return 1
     fi
+
+    echo ""
+    echo "PKI initialized with the following settings:"
+    show_crypto_summary
 
 }
 
@@ -3961,6 +4087,7 @@ while true; do
     echo " 11) Generate single .ovpn config file"
     echo ""
     echo "Setup & Integration:"
+    echo "  k) Configure cryptography settings (currently: ${OVPN_CRYPTO_ALGO})"
     echo " 12) Initialize EasyRSA for OpenVPN"
     echo " 13) Install LuCI OpenVPN and File Manager web interface"
     echo ""
@@ -4072,7 +4199,11 @@ while true; do
             fi
             read -p "Press Enter to continue..."
             ;;
-	    12)
+        k|K)
+            configure_crypto
+            read -p "Press Enter to continue..."
+            ;;
+        12)
             key_management_first_time
             ;;
         13)
