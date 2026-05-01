@@ -3779,7 +3779,7 @@ check_fix_permissions() {
     # Create temp file to store issues for batch fixing
     local temp_issues="/tmp/openvpn_perm_issues_$$"
     register_temp "$temp_issues"
-    > "$temp_issues"  # Clear/create temp file
+    true > "$temp_issues"
 
     # Check 1: Private keys must be 600 (CRITICAL SECURITY)
     echo "1. Checking private keys (*.key files)..."
