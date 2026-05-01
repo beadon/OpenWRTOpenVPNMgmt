@@ -78,6 +78,7 @@ OVPN_RSA_KEY_SIZE="2048"
 ################################################################################
 
 # Instance configuration
+# shellcheck disable=SC2034
 readonly OVPN_INSTANCE_TYPE="server"     # Type: server only (clients not managed)
 
 # Dynamic paths (updated when instance changes)
@@ -361,7 +362,6 @@ list_openvpn_instances() {
     fi
 
     local found_instances=0
-    local instance_list=""
     local instance_name
     local enabled
     local config_file
@@ -370,7 +370,7 @@ list_openvpn_instances() {
     local running_status
 
     # Iterate through UCI sections
-    uci show openvpn 2>/dev/null | grep "=openvpn$" | while IFS='=' read -r section_path section_type; do
+    uci show openvpn 2>/dev/null | grep "=openvpn$" | while IFS='=' read -r section_path _section_type; do
         # Extract instance name from path (e.g., openvpn.server -> server)
         instance_name=$(echo "$section_path" | cut -d'.' -f2)
 
@@ -634,7 +634,7 @@ check_ipv6_subnet_conflict() {
     local vpn_subnet="$1"
 
     # Get LAN IPv6 prefix
-    local lan_ipv6=$(ip -6 addr show dev br-lan 2>/dev/null | grep "inet6" | grep -v "fe80::" | grep -v "::1" | head -1)
+    local lan_ipv6; lan_ipv6=$(ip -6 addr show dev br-lan 2>/dev/null | grep "inet6" | grep -v "fe80::" | grep -v "::1" | head -1)
 
     if [ -z "$lan_ipv6" ]; then
         # No LAN IPv6, no conflict possible
@@ -642,8 +642,8 @@ check_ipv6_subnet_conflict() {
     fi
 
     # Extract LAN prefix (simplified comparison)
-    local lan_prefix=$(echo "$lan_ipv6" | awk '{print $2}' | cut -d'/' -f1 | sed 's/::[0-9a-f]*$//')
-    local vpn_prefix=$(echo "$vpn_subnet" | sed 's/::[0-9a-f]*$//' | sed 's/\/[0-9]*$//')
+    local lan_prefix; lan_prefix=$(echo "$lan_ipv6" | awk '{print $2}' | cut -d'/' -f1 | sed 's/::[0-9a-f]*$//')
+    local vpn_prefix; vpn_prefix=$(echo "$vpn_subnet" | sed 's/::[0-9a-f]*$//' | sed 's/\/[0-9]*$//')
 
     # Simple prefix comparison (first 64 bits)
     if [ "$lan_prefix" = "$vpn_prefix" ]; then
@@ -1174,7 +1174,7 @@ diagnose_ipv6_routing() {
 
     # Check 1: IPv6 forwarding enabled
     echo "1. Checking IPv6 forwarding..."
-    local ipv6_forward=$(cat /proc/sys/net/ipv6/conf/all/forwarding 2>/dev/null)
+    local ipv6_forward; ipv6_forward=$(cat /proc/sys/net/ipv6/conf/all/forwarding 2>/dev/null)
     if [ "$ipv6_forward" = "1" ]; then
         echo "   [OK] IPv6 forwarding is enabled"
     else
@@ -1186,7 +1186,7 @@ diagnose_ipv6_routing() {
 
     # Check 2: Router has IPv6 WAN connectivity
     echo "2. Checking router IPv6 WAN connectivity..."
-    local wan6_addr=$(ip -6 addr show | grep "scope global" | grep -v "fd00:" | grep -v "fe80:" | head -1)
+    local wan6_addr; wan6_addr=$(ip -6 addr show | grep "scope global" | grep -v "fd00:" | grep -v "fe80:" | head -1)
     if [ -n "$wan6_addr" ]; then
         echo "   [OK] Router has global IPv6 address"
         echo "   $wan6_addr"
@@ -1225,7 +1225,7 @@ diagnose_ipv6_routing() {
     # Check 5: IPv6 route for VPN subnet
     echo "5. Checking IPv6 routes for VPN subnet..."
     if [ "$OVPN_IPV6_ENABLE" = "yes" ]; then
-        local vpn_prefix=$(echo "$OVPN_IPV6_POOL" | cut -d'/' -f1 | sed 's/::[0-9a-f:]*$//')
+        local vpn_prefix; vpn_prefix=$(echo "$OVPN_IPV6_POOL" | cut -d'/' -f1 | sed 's/::[0-9a-f:]*$//')
         if ip -6 route show | grep -q "$vpn_prefix"; then
             echo "   [OK] Route exists for VPN IPv6 subnet"
             ip -6 route show | grep "$vpn_prefix" | sed 's/^/   /'
@@ -1858,6 +1858,7 @@ check_expiration() {
     fi
 
     current_date=$(date +%s)
+    # shellcheck disable=SC2034
     warning_threshold=$((30 * 24 * 60 * 60))  # 30 days in seconds
 
     for cert in ${OVPN_PKI}/issued/*.crt; do
@@ -2319,6 +2320,7 @@ generate_all_ovpn() {
     echo ""
 
     umask go=
+    # shellcheck disable=SC2034
     OVPN_DH="$(cat ${OVPN_PKI}/dh.pem)"
     OVPN_CA="$(openssl x509 -in ${OVPN_PKI}/ca.crt)"
 
@@ -2605,14 +2607,14 @@ monitor_single_instance() {
     local line
     local client_name
     local real_addr
-    local virtual_ipv4
-    local virtual_ipv6
+    local virtual_ipv4  # shellcheck disable=SC2034
+    local virtual_ipv6  # shellcheck disable=SC2034
     local bytes_recv
     local bytes_sent
     local connected_since
     local bytes_recv_mb
     local bytes_sent_mb
-    local status_file
+    local status_file  # shellcheck disable=SC2034
 
     # Get the status file path for this instance
     status_file=$(get_status_file_path "$instance")
@@ -2732,7 +2734,7 @@ monitor_single_instance() {
     done
 
     # Check OpenVPN log for client status
-    local log_file=$(get_log_file_path "$instance")
+    local log_file; log_file=$(get_log_file_path "$instance")
 
     if [ -f "$log_file" ]; then
         # Find PID for this specific instance
@@ -3379,7 +3381,7 @@ check_active_connections() {
         else
             # Log file doesn't exist - fallback to network interface method
             for tun_if in $(ip link show | grep -o "tun[0-9]*" | sort -u); do
-                local neighbors=$(ip neigh show dev "$tun_if" 2>/dev/null | grep -v "FAILED" | awk 'END {print NR}')
+                local neighbors; neighbors=$(ip neigh show dev "$tun_if" 2>/dev/null | grep -v "FAILED" | awk 'END {print NR}')
                 neighbors=$(echo "$neighbors" | tr -d ' \t\n\r')
                 neighbors=${neighbors:-0}
                 connection_count=$((connection_count + neighbors))
@@ -3540,7 +3542,7 @@ safe_restart_openvpn() {
 # Function to control OpenVPN server (start/stop/restart)
 control_openvpn_server() {
     local action
-    local status_output
+    local status_output  # shellcheck disable=SC2034
     local is_running
     local confirm
 
@@ -3628,7 +3630,7 @@ control_openvpn_server() {
             echo ""
 
             # Check process status
-            local vpn_pid=$(get_openvpn_pid "$OVPN_INSTANCE")
+            local vpn_pid; vpn_pid=$(get_openvpn_pid "$OVPN_INSTANCE")
             if [ -n "$vpn_pid" ]; then
                 echo "Process Status: RUNNING"
                 echo "PID: $vpn_pid"
@@ -3710,7 +3712,7 @@ get_file_perms() {
     if [ -z "$perms" ]; then
         # Use ls -l and parse permissions
         # Format: -rwxr-xr-x or drwxr-xr-x
-        local ls_perms=$(ls -ld "$filepath" 2>/dev/null | awk '{print $1}')
+        local ls_perms; ls_perms=$(ls -ld "$filepath" 2>/dev/null | awk '{print $1}')
 
         # Convert symbolic to octal (e.g., -rw-r--r-- -> 644)
         if [ -n "$ls_perms" ]; then
@@ -3749,9 +3751,9 @@ check_fix_permissions() {
     local file
     local dir
     local fix_all
-    local check_type
-    local expected_perms
-    local actual_perms
+    local check_type      # shellcheck disable=SC2034
+    local expected_perms  # shellcheck disable=SC2034
+    local actual_perms    # shellcheck disable=SC2034
     local temp_issues
     local counter
 

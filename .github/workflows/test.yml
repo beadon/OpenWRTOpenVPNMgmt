@@ -20,7 +20,9 @@ jobs:
           sudo apt-get install -y shellcheck
 
       - name: Run shellcheck
-        run: shellcheck --shell=sh --severity=warning openvpn_server_management.sh
+        # SC3043/SC3045: local and read -p/-t are ash extensions used deliberately;
+        # not POSIX but supported by busybox ash on all target OpenWrt versions.
+        run: shellcheck --shell=sh --severity=warning --exclude=SC3043,SC3045 openvpn_server_management.sh
 
   unit-tests:
     name: Unit Tests
