@@ -188,7 +188,7 @@ pkg_install() {
 # Check whether a package is installed (by exact name)
 pkg_is_installed() {
     case "$PKG_MGR" in
-        apk)  apk list --installed 2>/dev/null | grep -q "^$1 " ;;
+        apk)  apk list --installed 2>/dev/null | grep -q "^$1-" ;;
         opkg) opkg list-installed 2>/dev/null | grep -q "^$1 " ;;
     esac
 }
@@ -3996,10 +3996,19 @@ check_fix_permissions() {
 install_needed_packages() {
     local confirm
 
+    # apk uses 'openvpn' as a virtual provider (resolves to -openssl or -mbedtls
+    # without conflicting with whichever variant is already installed).
+    # opkg on OpenWrt 24 and below requires the explicit package name.
+    local ovpn_pkg
+    case "$PKG_MGR" in
+        apk)  ovpn_pkg="openvpn" ;;
+        opkg) ovpn_pkg="openvpn-openssl" ;;
+    esac
+
     echo ""
     echo "=== Install Required Packages ==="
     echo ""
-    echo "This will install: at, openvpn-openssl, openvpn-easy-rsa"
+    echo "This will install: at, $ovpn_pkg, openvpn-easy-rsa"
     echo ""
     read -p "Continue with installation? (yes/no): " confirm
 
@@ -4017,8 +4026,8 @@ install_needed_packages() {
     fi
 
     echo ""
-    echo "Installing at, openvpn-openssl, openvpn-easy-rsa..."
-    if pkg_install at openvpn-openssl openvpn-easy-rsa; then
+    echo "Installing at, $ovpn_pkg, openvpn-easy-rsa..."
+    if pkg_install at "$ovpn_pkg" openvpn-easy-rsa; then
         echo ""
         echo "Installation complete!"
         echo ""
@@ -4107,7 +4116,7 @@ while true; do
     echo " 18) Check/Fix file permissions"
     echo ""
     echo "Package Management:"
-    echo " 19) Install required packages (at, openvpn-openssl, openvpn-easy-rsa)"
+    echo " 19) Install required packages (at, openvpn, openvpn-easy-rsa)"
     echo ""
     echo " 20) Exit"
     echo ""

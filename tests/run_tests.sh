@@ -12,6 +12,13 @@ OPENWRT_HOST="${OPENWRT_HOST:?Set OPENWRT_HOST to the device IP}"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 
+# Path constants — must match integration_test.sh and openvpn_server_management.sh
+OVPN_EASYRSA="/etc/easy-rsa"
+OVPN_PKI="$OVPN_EASYRSA/pki"
+OVPN_CONF="/etc/openvpn/server.conf"
+OVPN_DIR="/root/ovpn_config_out"
+CRONTAB="/etc/crontabs/root"
+
 echo "Copying files to $OPENWRT_HOST..."
 scp "$REPO_ROOT/openvpn_server_management.sh" \
     "$SCRIPT_DIR/sexpect_helper.sh" \
@@ -21,8 +28,20 @@ scp "$REPO_ROOT/openvpn_server_management.sh" \
 ssh "root@${OPENWRT_HOST}" 'chmod +x /root/integration_test.sh /root/sexpect_helper.sh /root/openvpn_server_management.sh'
 
 echo "Pre-cleaning device state..."
-ssh "root@${OPENWRT_HOST}" \
-    'killall sexpect 2>/dev/null; rm -f /tmp/sexpect*.sock /etc/openvpn/server.conf /etc/crontabs/root; rm -rf /etc/easy-rsa /root/ovpn_config_out; mkdir -p /etc/easy-rsa /etc/openvpn; echo "clean"'
+ssh "root@${OPENWRT_HOST}" "sh -s" <<CLEAN
+set -e
+killall sexpect 2>/dev/null || true
+rm -f /tmp/sexpect*.sock "$OVPN_CONF" "$CRONTAB"
+rm -rf "$OVPN_EASYRSA" "$OVPN_DIR"
+mkdir -p "$OVPN_EASYRSA" "$(dirname "$OVPN_CONF")"
+# Uninstall packages so Suite 0 exercises a real install
+if command -v apk >/dev/null 2>&1; then
+    apk del openvpn-easy-rsa at 2>/dev/null || true
+else
+    opkg remove openvpn-easy-rsa at 2>/dev/null || true
+fi
+echo "clean"
+CLEAN
 
 LOG="$SCRIPT_DIR/last_run.txt"
 echo "Running integration tests on $OPENWRT_HOST..."

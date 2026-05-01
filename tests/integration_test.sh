@@ -15,6 +15,20 @@ OVPN_DIR="/root/ovpn_config_out"
 CRONTAB="/etc/crontabs/root"
 TEST_CLIENT="testclient1"
 
+# Detect package manager — mirrors logic in the main script
+if command -v apk >/dev/null 2>&1; then
+    TEST_PKG_MGR="apk"
+else
+    TEST_PKG_MGR="opkg"
+fi
+
+pkg_is_installed_test() {
+    case "$TEST_PKG_MGR" in
+        apk)  apk list --installed 2>/dev/null | grep -q "^$1-" ;;
+        opkg) opkg list-installed 2>/dev/null | grep -q "^$1 " ;;
+    esac
+}
+
 PASS=0
 FAIL=0
 
@@ -38,6 +52,18 @@ check() {
     if "$@" 2>/dev/null; then pass; else fail "$*"; fi
 }
 
+# Abort if any failures have occurred — used as a suite gate so downstream
+# suites don't cascade-fail when a prerequisite suite has not passed.
+require_suite() {
+    if [ "$FAIL" -gt 0 ]; then
+        printf "\n  [%s] ABORT: prerequisite suite failed (%d failures) — skipping remaining suites\n\n" "$(ts)" "$FAIL" >&2
+        quit_script
+        kill_session
+        printf "\n=== Results: %d passed, %d failed (finished: %s) ===\n\n" "$PASS" "$FAIL" "$(ts)"
+        exit 1
+    fi
+}
+
 # ── Setup / teardown ──────────────────────────────────────────────────────────
 
 cleanup() {
@@ -53,6 +79,40 @@ printf "\n=== OpenVPN Management Script Integration Tests ===\n"
 printf "    Started: %s\n\n" "$(ts)"
 
 spawn_script
+
+# ── Suite 0: Package Installation (option 19) ────────────────────────────────
+
+printf "--- [%s] Suite 0: Package Installation (%s) ---\n" "$(ts)" "$TEST_PKG_MGR"
+
+it "package manager detected ($TEST_PKG_MGR)"
+if [ "$TEST_PKG_MGR" = "apk" ] || [ "$TEST_PKG_MGR" = "opkg" ]; then
+    pass
+else
+    fail "unknown package manager: $TEST_PKG_MGR"
+fi
+
+it "option 19 installs packages"
+select_option "19"
+expect_send "Continue with installation" "yes" 10
+# pkg_update + pkg_install run unattended; wait up to 120s for download+install
+check wait_for "Installation complete" 120
+expect_send "Press Enter" "" 5
+check wait_for "Select an option:" 5
+
+it "openvpn-easy-rsa installed"
+check pkg_is_installed_test "openvpn-easy-rsa"
+
+it "at installed"
+check pkg_is_installed_test "at"
+
+it "openvpn installed"
+# apk resolves 'openvpn' to whichever variant (-openssl/-mbedtls) is present
+case "$TEST_PKG_MGR" in
+    apk)  if apk list --installed 2>/dev/null | grep -q "^openvpn-"; then pass; else fail "no openvpn variant installed"; fi ;;
+    opkg) check pkg_is_installed_test "openvpn-openssl" ;;
+esac
+
+require_suite  # suites 1–4 depend on packages being installed
 
 # ── Suite 1: PKI Initialization (EC / prime256v1) ────────────────────────────
 
