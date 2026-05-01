@@ -20,6 +20,10 @@ scp "$REPO_ROOT/openvpn_server_management.sh" \
 
 ssh "root@${OPENWRT_HOST}" 'chmod +x /root/integration_test.sh /root/sexpect_helper.sh /root/openvpn_server_management.sh'
 
+echo "Pre-cleaning device state..."
+ssh "root@${OPENWRT_HOST}" \
+    'killall sexpect 2>/dev/null; rm -f /tmp/sexpect*.sock /etc/openvpn/server.conf /etc/crontabs/root; rm -rf /etc/easy-rsa/pki /root/ovpn_config_out; mkdir -p /etc/easy-rsa /etc/openvpn; echo "clean"'
+
 echo "Running integration tests on $OPENWRT_HOST..."
 echo ""
 ssh "root@${OPENWRT_HOST}" \

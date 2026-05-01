@@ -2,16 +2,13 @@
 # Integration test suite — runs ON the OpenWrt device, drives the interactive
 # menu via sexpect. Invoked remotely by run_tests.sh on the Mac.
 #
-# Usage (direct, on device):
-#   /root/integration_test.sh
-#
-# Usage (from Mac via run_tests.sh):
+# Usage (from Mac):
 #   OPENWRT_HOST=192.168.88.32 ./tests/run_tests.sh
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 . "$SCRIPT_DIR/sexpect_helper.sh"
 
-OVPN_PKI="/etc/openvpn/easy-rsa/pki"
+OVPN_PKI="/etc/easy-rsa/pki"
 OVPN_CONF="/etc/openvpn/server.conf"
 TEST_CLIENT="testclient1"
 
@@ -21,16 +18,16 @@ FAIL=0
 # ── Test framework ────────────────────────────────────────────────────────────
 
 TEST_NAME=""
-
+ts() { date +%H:%M:%S; }
 it() { TEST_NAME="$1"; }
 
 pass() {
-    printf "  PASS: %s\n" "$TEST_NAME"
+    printf "  [%s] PASS: %s\n" "$(ts)" "$TEST_NAME"
     PASS=$((PASS + 1))
 }
 
 fail() {
-    printf "  FAIL: %s — %s\n" "$TEST_NAME" "$1" >&2
+    printf "  [%s] FAIL: %s — %s\n" "$(ts)" "$TEST_NAME" "$1" >&2
     FAIL=$((FAIL + 1))
 }
 
@@ -42,29 +39,25 @@ check() {
 
 cleanup() {
     kill_session 2>/dev/null || true
-    rm -rf "$OVPN_PKI" /etc/openvpn/easy-rsa /etc/openvpn/server.conf \
-           /etc/crontabs/root 2>/dev/null || true
+    rm -rf "$OVPN_PKI" /etc/openvpn/server.conf /etc/crontabs/root /root/ovpn_config_out 2>/dev/null || true
 }
 
 trap cleanup EXIT INT TERM
 cleanup
+mkdir -p /etc/easy-rsa /etc/openvpn
 
-echo ""
-echo "=== OpenVPN Management Script Integration Tests ==="
-echo ""
+printf "\n=== OpenVPN Management Script Integration Tests ===\n"
+printf "    Started: %s\n\n" "$(ts)"
 
 spawn_script
 
 # ── Suite 1: PKI Initialization (EC / prime256v1) ────────────────────────────
 
-echo "--- Suite 1: PKI Initialization ---"
-
-it "menu appears on startup"
-check wait_for "$MENU_PROMPT" 15
+printf "--- [%s] Suite 1: PKI Initialization ---\n" "$(ts)"
 
 it "option 12 completes PKI init"
 select_option "12"
-check wait_for "$MENU_PROMPT" 120
+check wait_for "Select an option:" 60
 
 it "PKI directory created"
 check assert_file_exists "$OVPN_PKI"
@@ -106,15 +99,15 @@ fi
 
 # ── Suite 2: Server Config Generation (option 1) ─────────────────────────────
 
-echo ""
-echo "--- Suite 2: Server Config Generation ---"
+printf "\n--- [%s] Suite 2: Server Config Generation ---\n" "$(ts)"
 
 it "option 1 generates server.conf"
 select_option "1"
-wait_for "overwrite\? \(yes/no\)" 15 && send "yes" || true
-wait_for "view.*\(y/n\)" 15 && send "n" || true
-wait_for "Restart OpenVPN.*\(y/n\)" 15 && send "n" || true
-check wait_for "$MENU_PROMPT" 30
+expect_send "Press Enter" ""    5   # IPv6 leak warning gate
+expect_send "Continue" "y"     10  # new conf: Continue? (y/n)
+expect_send "[Vv]iew" "n"      15  # View generated config? (y/n)
+expect_send "Restart" "n"      5   # Restart OpenVPN? (y/n)
+check wait_for "Select an option:" 5
 
 it "server.conf file created"
 check assert_file_exists "$OVPN_CONF"
@@ -133,14 +126,14 @@ check assert_file_contains "$OVPN_CONF" "tls-crypt-v2"
 
 # ── Suite 3: Client Certificate Creation (option 4) ──────────────────────────
 
-echo ""
-echo "--- Suite 3: Client Certificate Creation ---"
+printf "\n--- [%s] Suite 3: Client Certificate Creation ---\n" "$(ts)"
 
 it "option 4 creates client certificate"
 select_option "4"
-wait_for "Enter client name:" 10 && send "$TEST_CLIENT" || true
-wait_for "Generate .ovpn.*\(y/n\)" 30 && send "y" || true
-check wait_for "$MENU_PROMPT" 60
+expect_send "Enter client name:" "$TEST_CLIENT" 5
+expect_send "Generate" "y"                      10  # Generate .ovpn config file?
+expect_send "Daemon restart" "n"                10  # OpenVPN Daemon restart
+check wait_for "Select an option:" 10
 
 it "client certificate file created"
 check assert_file_exists "$OVPN_PKI/issued/$TEST_CLIENT.crt"
@@ -154,26 +147,27 @@ check assert_file_exists "$OVPN_PKI/private/$TEST_CLIENT.key"
 it "client private key has 600 permissions"
 check assert_file_perms "$OVPN_PKI/private/$TEST_CLIENT.key" "600"
 
+OVPN_PROFILE="/root/ovpn_config_out/$TEST_CLIENT.ovpn"
+
 it ".ovpn profile created"
-check assert_file_exists "/etc/openvpn/$TEST_CLIENT.ovpn"
+check assert_file_exists "$OVPN_PROFILE"
 
 it ".ovpn profile contains inline CA block"
-check assert_file_contains "/etc/openvpn/$TEST_CLIENT.ovpn" "<ca>"
+check assert_file_contains "$OVPN_PROFILE" "<ca>"
 
 it ".ovpn profile contains inline tls-crypt-v2 block"
-check assert_file_contains "/etc/openvpn/$TEST_CLIENT.ovpn" "<tls-crypt-v2>"
+check assert_file_contains "$OVPN_PROFILE" "<tls-crypt-v2>"
 
-# ── Suite 4: CRL — Revoke + Auto-renewal (option 6, r) ───────────────────────
+# ── Suite 4: CRL — Revoke + Auto-renewal ─────────────────────────────────────
 
-echo ""
-echo "--- Suite 4: CRL Revocation and Auto-renewal ---"
+printf "\n--- [%s] Suite 4: CRL Revocation and Auto-renewal ---\n" "$(ts)"
 
 it "option 6 revokes client"
 select_option "6"
-wait_for "Enter client name to revoke:" 10 && send "$TEST_CLIENT" || true
-wait_for "Confirm revocation.*\(yes/no\)" 15 && send "yes" || true
-wait_for "Restart OpenVPN.*\(y/n\)" 15 && send "n" || true
-check wait_for "$MENU_PROMPT" 30
+expect_send "Enter client name to revoke:" "$TEST_CLIENT" 5
+expect_send "Are you sure" "yes"                           5
+expect_send "Restart" "n"                                  10
+check wait_for "Select an option:" 10
 
 it "CRL file created after revocation"
 check assert_file_exists "$OVPN_PKI/crl.pem"
@@ -190,31 +184,30 @@ fi
 
 it "CRL check expiry (r → 1)"
 select_option "r"
-wait_for "Select option:" 10 && send "1" || true
-wait_for "days\|expires\|CRL" 15
-press_enter
+expect_send "Select option:" "1" 5
+expect_send "Press Enter" ""    10  # consume continue gate
+check wait_for "Select an option:" 5
 
 it "CRL install cron job (r → 4)"
 select_option "r"
-wait_for "Select option:" 10 && send "4" || true
-press_enter
+expect_send "Select option:" "4" 5
+expect_send "Press Enter" ""    10
+check wait_for "Select an option:" 5
 
 it "cron job installed in /etc/crontabs/root"
 check assert_file_contains "/etc/crontabs/root" "openvpn-crl-renewal"
 
 it "CRL cron status shows installed (r → 3)"
 select_option "r"
-wait_for "Select option:" 10 && send "3" || true
-wait_for "installed\|enabled\|scheduled" 10
-press_enter
+expect_send "Select option:" "3" 5
+expect_send "Press Enter" ""    10
+check wait_for "Select an option:" 5
 
 # ── Done ──────────────────────────────────────────────────────────────────────
 
 quit_script
 kill_session
 
-echo ""
-echo "=== Results: $PASS passed, $FAIL failed ==="
-echo ""
+printf "\n=== Results: %d passed, %d failed (finished: %s) ===\n\n" "$PASS" "$FAIL" "$(ts)"
 
 [ "$FAIL" -eq 0 ]

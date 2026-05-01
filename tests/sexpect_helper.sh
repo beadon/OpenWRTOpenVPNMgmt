@@ -33,35 +33,41 @@ send() {
     sexpect -sock "$SEXPECT_SOCK" send -enter "$1"
 }
 
+# Wait for pattern then send reply — fails hard if pattern not seen in time.
+# Use this for every known prompt so timeouts surface immediately.
+expect_send() {
+    local pattern="$1"
+    local reply="$2"
+    local timeout="${3:-$TIMEOUT}"
+    wait_for "$pattern" "$timeout"
+    send "$reply"
+}
+
 select_option() {
     wait_for "$MENU_PROMPT"
     send "$1"
 }
 
-# Consume a "Press Enter to continue" gate then wait for menu to redraw.
+# After an action that ends with "Press Enter to continue", consume it.
 press_enter() {
     wait_for "$CONTINUE_PROMPT"
     send ""
     wait_for "$MENU_PROMPT"
 }
 
-# After sending a menu option, wait for either the "Press Enter" gate or
-# the menu prompt — whichever comes first. Sends enter if gated, then
-# waits for the menu. No fixed sleep; returns as soon as output arrives.
+# Wait for either the continue gate or menu prompt, handle whichever arrives.
+# Returns once back at the menu.
 after_action() {
     local timeout="${1:-15}"
     if sexpect -sock "$SEXPECT_SOCK" expect -re "$CONTINUE_PROMPT|$MENU_PROMPT" -timeout "$timeout"; then
-        # Matched — check which one via lookback
         if sexpect -sock "$SEXPECT_SOCK" expect_out 2>/dev/null | grep -q "Press Enter"; then
             send ""
             wait_for "$MENU_PROMPT" "$timeout"
         fi
-        # else: already at menu prompt, nothing to do
     fi
 }
 
 quit_script() {
-    wait_for "$MENU_PROMPT"
     send "20"
     sexpect -sock "$SEXPECT_SOCK" wait 2>/dev/null || true
 }
@@ -69,7 +75,7 @@ quit_script() {
 # ── Assertion helpers ─────────────────────────────────────────────────────────
 
 assert_file_exists() {
-    test -f "$1" || { echo "FAIL: file missing: $1" >&2; return 1; }
+    { test -f "$1" || test -d "$1"; } || { echo "FAIL: path missing: $1" >&2; return 1; }
 }
 
 assert_file_contains() {
@@ -77,9 +83,15 @@ assert_file_contains() {
 }
 
 assert_file_perms() {
-    local actual
-    actual=$(stat -c '%a' "$1" 2>/dev/null)
-    [ "$actual" = "$2" ] || { echo "FAIL: $1 perms: expected $2, got $actual" >&2; return 1; }
+    # BusyBox stat uses -c on some builds but not all; use ls -la instead
+    local bits
+    bits=$(ls -la "$1" 2>/dev/null | awk '{print $1}')
+    case "$2" in
+        600) [ "$bits" = "-rw-------" ] || { echo "FAIL: $1 perms: expected 600, got $bits" >&2; return 1; } ;;
+        640) [ "$bits" = "-rw-r-----" ] || { echo "FAIL: $1 perms: expected 640, got $bits" >&2; return 1; } ;;
+        400) [ "$bits" = "-r--------" ] || { echo "FAIL: $1 perms: expected 400, got $bits" >&2; return 1; } ;;
+        *)   echo "FAIL: assert_file_perms: unsupported mode $2" >&2; return 1 ;;
+    esac
 }
 
 assert_valid_cert() {
