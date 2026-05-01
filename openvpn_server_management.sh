@@ -2607,14 +2607,17 @@ monitor_single_instance() {
     local line
     local client_name
     local real_addr
-    local virtual_ipv4  # shellcheck disable=SC2034
-    local virtual_ipv6  # shellcheck disable=SC2034
+    # shellcheck disable=SC2034
+    local virtual_ipv4
+    # shellcheck disable=SC2034
+    local virtual_ipv6
     local bytes_recv
     local bytes_sent
     local connected_since
     local bytes_recv_mb
     local bytes_sent_mb
-    local status_file  # shellcheck disable=SC2034
+    # shellcheck disable=SC2034
+    local status_file
 
     # Get the status file path for this instance
     status_file=$(get_status_file_path "$instance")
@@ -3542,7 +3545,8 @@ safe_restart_openvpn() {
 # Function to control OpenVPN server (start/stop/restart)
 control_openvpn_server() {
     local action
-    local status_output  # shellcheck disable=SC2034
+    # shellcheck disable=SC2034
+    local status_output
     local is_running
     local confirm
 
@@ -3751,9 +3755,12 @@ check_fix_permissions() {
     local file
     local dir
     local fix_all
-    local check_type      # shellcheck disable=SC2034
-    local expected_perms  # shellcheck disable=SC2034
-    local actual_perms    # shellcheck disable=SC2034
+    # shellcheck disable=SC2034
+    local check_type
+    # shellcheck disable=SC2034
+    local expected_perms
+    # shellcheck disable=SC2034
+    local actual_perms
     local temp_issues
     local counter
 
