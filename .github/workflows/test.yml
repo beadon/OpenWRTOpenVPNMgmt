@@ -44,7 +44,8 @@ jobs:
           curl -fsSL -o /tmp/shellspec-dist.tar.gz "$SHELLSPEC_URL"
           echo "${SHELLSPEC_SHA256}  /tmp/shellspec-dist.tar.gz" | sha256sum --check --strict
           tar -xzf /tmp/shellspec-dist.tar.gz -C /tmp
-          sudo install -m 755 /tmp/shellspec/shellspec /usr/local/bin/shellspec
+          sudo cp -r /tmp/shellspec /usr/local/lib/shellspec
+          sudo ln -sf /usr/local/lib/shellspec/shellspec /usr/local/bin/shellspec
 
       - name: Run unit tests
         run: shellspec --shell busybox spec/unit/
@@ -67,7 +68,8 @@ jobs:
           curl -fsSL -o /tmp/shellspec-dist.tar.gz "$SHELLSPEC_URL"
           echo "${SHELLSPEC_SHA256}  /tmp/shellspec-dist.tar.gz" | sha256sum --check --strict
           tar -xzf /tmp/shellspec-dist.tar.gz -C /tmp
-          sudo install -m 755 /tmp/shellspec/shellspec /usr/local/bin/shellspec
+          sudo cp -r /tmp/shellspec /usr/local/lib/shellspec
+          sudo ln -sf /usr/local/lib/shellspec/shellspec /usr/local/bin/shellspec
 
       - name: Build OpenWrt test container
         # Pin by digest to prevent tag mutation attacks.
