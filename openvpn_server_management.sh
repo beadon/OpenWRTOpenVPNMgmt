@@ -1908,7 +1908,11 @@ check_crl_expiry() {
         return 1
     fi
 
-    exp_date=$(date -d "$next_update" +%s 2>/dev/null || \
+    # BusyBox date requires -D strptime format and no timezone suffix
+    local next_update_stripped
+    next_update_stripped=$(echo "$next_update" | sed 's/ GMT$//')
+    exp_date=$(date -u -D "%b %d %H:%M:%S %Y" -d "$next_update_stripped" +%s 2>/dev/null || \
+               date -d "$next_update" +%s 2>/dev/null || \
                date -j -f "%b %d %H:%M:%S %Y %Z" "$next_update" +%s 2>/dev/null)
     if [ -z "$exp_date" ]; then
         echo "WARNING: Could not convert CRL expiry date" >&2
