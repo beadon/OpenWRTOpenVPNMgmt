@@ -3664,7 +3664,7 @@ control_openvpn_server() {
             echo "Enabling OpenVPN server to start on boot..."
             uci set openvpn.${OVPN_INSTANCE}.enabled='1'
             if ! run_cmd "commit OpenVPN UCI configuration" uci commit openvpn; then
-                break
+                return 1
             fi
             /etc/init.d/openvpn enable
             echo ""
@@ -3678,7 +3678,7 @@ control_openvpn_server() {
                 echo "Disabling OpenVPN server from starting on boot..."
                 uci set openvpn.${OVPN_INSTANCE}.enabled='0'
                 if ! run_cmd "commit OpenVPN UCI configuration" uci commit openvpn; then
-                    break
+                    return 1
                 fi
                 echo ""
                 echo "OpenVPN instance '$OVPN_INSTANCE' will NOT start automatically on boot."
