@@ -2620,6 +2620,7 @@ monitor_single_instance() {
     local status_file
 
     # Get the status file path for this instance
+    # shellcheck disable=SC2034
     status_file=$(get_status_file_path "$instance")
 
     echo "=================================================="
