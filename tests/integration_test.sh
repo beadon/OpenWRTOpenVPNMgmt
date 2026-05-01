@@ -8,8 +8,11 @@
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 . "$SCRIPT_DIR/sexpect_helper.sh"
 
+OVPN_EASYRSA="/etc/easy-rsa"
 OVPN_PKI="/etc/easy-rsa/pki"
 OVPN_CONF="/etc/openvpn/server.conf"
+OVPN_DIR="/root/ovpn_config_out"
+CRONTAB="/etc/crontabs/root"
 TEST_CLIENT="testclient1"
 
 PASS=0
@@ -39,12 +42,12 @@ check() {
 
 cleanup() {
     kill_session 2>/dev/null || true
-    rm -rf /etc/easy-rsa /etc/openvpn/server.conf /etc/crontabs/root /root/ovpn_config_out 2>/dev/null || true
+    rm -rf "$OVPN_EASYRSA" "$OVPN_CONF" "$CRONTAB" "$OVPN_DIR" 2>/dev/null || true
 }
 
 trap cleanup EXIT INT TERM
 cleanup
-mkdir -p /etc/easy-rsa /etc/openvpn
+mkdir -p "$OVPN_EASYRSA" "$(dirname "$OVPN_CONF")"
 
 printf "\n=== OpenVPN Management Script Integration Tests ===\n"
 printf "    Started: %s\n\n" "$(ts)"
@@ -147,7 +150,7 @@ check assert_file_exists "$OVPN_PKI/private/$TEST_CLIENT.key"
 it "client private key has 600 permissions"
 check assert_file_perms "$OVPN_PKI/private/$TEST_CLIENT.key" "600"
 
-OVPN_PROFILE="/root/ovpn_config_out/$TEST_CLIENT.ovpn"
+OVPN_PROFILE="$OVPN_DIR/$TEST_CLIENT.ovpn"
 
 it ".ovpn profile created"
 check assert_file_exists "$OVPN_PROFILE"
@@ -195,7 +198,7 @@ expect_send "Press Enter" ""    10
 check wait_for "Select an option:" 5
 
 it "cron job installed in /etc/crontabs/root"
-check assert_file_contains "/etc/crontabs/root" "openvpn-crl-renewal"
+check assert_file_contains "$CRONTAB" "openvpn-crl-renewal"
 
 it "CRL cron status shows installed (r → 3)"
 select_option "r"
