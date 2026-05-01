@@ -39,7 +39,7 @@ check() {
 
 cleanup() {
     kill_session 2>/dev/null || true
-    rm -rf "$OVPN_PKI" /etc/openvpn/server.conf /etc/crontabs/root /root/ovpn_config_out 2>/dev/null || true
+    rm -rf /etc/easy-rsa /etc/openvpn/server.conf /etc/crontabs/root /root/ovpn_config_out 2>/dev/null || true
 }
 
 trap cleanup EXIT INT TERM

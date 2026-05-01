@@ -22,7 +22,7 @@ ssh "root@${OPENWRT_HOST}" 'chmod +x /root/integration_test.sh /root/sexpect_hel
 
 echo "Pre-cleaning device state..."
 ssh "root@${OPENWRT_HOST}" \
-    'killall sexpect 2>/dev/null; rm -f /tmp/sexpect*.sock /etc/openvpn/server.conf /etc/crontabs/root; rm -rf /etc/easy-rsa/pki /root/ovpn_config_out; mkdir -p /etc/easy-rsa /etc/openvpn; echo "clean"'
+    'killall sexpect 2>/dev/null; rm -f /tmp/sexpect*.sock /etc/openvpn/server.conf /etc/crontabs/root; rm -rf /etc/easy-rsa /root/ovpn_config_out; mkdir -p /etc/easy-rsa /etc/openvpn; echo "clean"'
 
 LOG="$SCRIPT_DIR/last_run.txt"
 echo "Running integration tests on $OPENWRT_HOST..."
