@@ -167,16 +167,25 @@ This guide assumes you're starting from scratch with nothing installed. Follow t
 **Menu Option: 19**
 
 ```
-19) Install required packages (at, openvpn-openssl, openvpn-easy-rsa)
+19) Install required packages (at, openvpn, openvpn-easy-rsa)
 Continue with installation? (yes/no): yes
 ```
 
 This installs the core packages needed to run the script:
 - `at` — used for scheduling safe restarts
-- `openvpn-openssl` — the OpenVPN daemon
+- `openvpn` — the OpenVPN daemon (resolves to `openvpn-openssl` or `openvpn-mbedtls` depending on your build)
 - `openvpn-easy-rsa` — certificate and PKI management
 
 The script automatically uses `apk` on OpenWRT 25+ or `opkg` on older versions.
+
+**Package manager differences:**
+
+| Version | Package manager | OpenVPN package |
+|---------|----------------|-----------------|
+| OpenWRT 25+ | `apk` | `openvpn` (virtual provider — resolves to `-openssl` or `-mbedtls`) |
+| OpenWRT 24 and below | `opkg` | `openvpn-openssl` |
+
+The script detects the package manager at startup and uses the correct package name automatically.
 
 ### Step 2: Install LuCI Web Interface (Optional but Recommended)
 
@@ -1751,19 +1760,62 @@ GitHub Actions runs three jobs on every push and PR to `main` and `dev`:
 ShellSpec 0.28.1 is installed from a pinned GitHub release tarball with SHA256 verification.
 See `.github/workflows/shellspec.sha256` for the recorded checksum.
 
-### Real Device Testing
+### Real Device Integration Tests (Authoritative)
 
-The authoritative test environment is a physical OpenWrt device. Features that cannot be
-tested in Docker (firewall rules, `crond`, service management, actual VPN tunnel) require
-a real device.
+The authoritative test environment is a physical OpenWrt device running the full interactive
+menu via `sexpect`. This covers everything Docker cannot: package installation, firewall
+rules, `crond`, service management, and actual PKI generation timing.
+
+**Prerequisites on the device:**
+- `sexpect` installed (`apk add sexpect` or `opkg install sexpect`)
+- `openssh-sftp-server` installed (for SCP transfers)
+- SSH key access as root
+
+**Run the full suite from your Mac:**
 
 ```bash
-# Copy script to device
-scp openvpn_server_management.sh root@<router-ip>:/root/
-
-# Run on device
-ssh root@<router-ip> '/root/openvpn_server_management.sh'
+OPENWRT_HOST=192.168.88.32 ./tests/run_tests.sh
 ```
+
+The launcher (`tests/run_tests.sh`):
+1. Copies the script and test files to the device over SCP
+2. Pre-cleans device state (removes PKI, config files, and uninstalls test packages)
+3. SSHes in once and runs `tests/integration_test.sh` locally on the device
+4. Tees output to `tests/last_run.txt`
+
+**Test suites (39 tests, ~12s on Pi 3):**
+
+| Suite | What it tests |
+|-------|--------------|
+| Suite 0 | Package installation via `apk`/`opkg` (cold start — packages uninstalled by pre-clean) |
+| Suite 1 | PKI initialisation — EC/prime256v1, CA cert, server cert, TLS-crypt-v2 key |
+| Suite 2 | `server.conf` generation — TLS 1.2 min, AES-256-GCM, `dh none` (EC) |
+| Suite 3 | Client certificate creation and `.ovpn` profile generation |
+| Suite 4 | CRL revocation, auto-enable of `crl-verify`, cron job install |
+
+**Key implementation notes:**
+
+- All `sexpect` calls run locally on the device — no nested SSH loops
+- `expect_send` primitive hard-fails if a prompt is not seen within its timeout, preventing silent cascade failures
+- `require_suite` gates abort remaining suites immediately if a prerequisite suite fails
+- Pre-clean wipes `/etc/easy-rsa` entirely so Suite 1 PKI timing reflects a genuine cold start
+- All filesystem paths are declared as variables at the top of `integration_test.sh` — no hardcoded paths in test logic
+- `apk list --installed` format is `<name>-<version>`, not `<name> ` — the `pkg_is_installed` helper uses `grep "^<name>-"` for apk
+
+**Package manager compatibility (apk vs opkg):**
+
+The script and tests both mirror the same detection logic:
+
+```sh
+if command -v apk >/dev/null 2>&1; then PKG_MGR="apk"; else PKG_MGR="opkg"; fi
+```
+
+| Behaviour | apk (OpenWRT 25+) | opkg (OpenWRT 24 and below) |
+|-----------|-------------------|---------------------------|
+| Install packages | `apk add <pkg>` | `opkg install <pkg>` |
+| Update lists | `apk update` | `opkg update` |
+| Check installed | `apk list --installed \| grep "^<name>-"` | `opkg list-installed \| grep "^<name> "` |
+| OpenVPN package | `openvpn` (virtual provider) | `openvpn-openssl` |
 
 ### Docker Test Container
 

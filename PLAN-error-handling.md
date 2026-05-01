@@ -72,41 +72,46 @@ Phase 3 is now: guard unprotected `uci commit` calls in production paths.
 
 ---
 
-## Testing Framework: ShellSpec
+## Testing Framework
 
-### Why ShellSpec
+### ShellSpec (Unit Tests)
 - BDD-style testing framework for POSIX shells
 - Explicitly supports busybox ash (OpenWRT's shell)
 - Tested on OpenWRT via Docker in ShellSpec's own CI
 - Works with GitHub Actions
 - Uses only POSIX-compliant commands
 
-### Test Structure
+### sexpect Integration Tests — COMPLETED (v2.7.0+)
+
+The authoritative integration test harness drives the full interactive menu on a real
+OpenWrt device via `sexpect` (client/server PTY tool). 39 tests in ~12s on Pi 3.
+
+**Files:**
 ```
-spec/
-├── spec_helper.sh          # Common setup, Docker helpers
-├── error_handling_spec.sh  # Unit tests for error functions
-├── create_client_spec.sh   # Integration test for client creation
-├── revoke_client_spec.sh   # Integration test for revocation
-├── generate_conf_spec.sh   # Integration test for config generation
-└── pki_init_spec.sh        # Integration test for PKI initialization
+tests/
+├── run_tests.sh          # Mac-side launcher (SCP + SSH, pre-clean, tee to last_run.txt)
+├── integration_test.sh   # Runs ON device — 5 suites, 39 tests
+├── sexpect_helper.sh     # Primitives: spawn_script, expect_send, wait_for, assertions
+└── last_run.txt          # Output of last run (gitignored)
 ```
 
-### Test Categories
+**Suites:**
+- Suite 0: Package installation cold-start (packages uninstalled by pre-clean)
+- Suite 1: PKI init — EC/prime256v1, CA, server cert, TLS-crypt-v2
+- Suite 2: server.conf generation — TLS 1.2, AES-256-GCM, dh none
+- Suite 3: Client cert creation, .ovpn profile generation
+- Suite 4: CRL revocation, crl-verify auto-enable, cron install
 
-**Unit Tests (fast, no Docker):**
-- `run_cmd()` success/failure behavior
-- `error_exit()` output format
-- `warn()` and `info()` output format
-- `register_temp()` and `cleanup()` behavior
+**Verified on:** OpenWrt 25.12.2 / Pi 3, openvpn-mbedtls 2.7.1, easyrsa 3.2.1, sexpect 2.3.14
 
-**Integration Tests (require Docker):**
-- Menu option 12: EasyRSA/PKI initialization
-- Menu option 1: Generate server.conf
-- Menu option 4: Create client certificate
-- Menu option 6: Revoke client certificate
-- Menu option 11: Generate .ovpn file
-- Error handling when commands fail (e.g., missing dependencies)
+**Key design decisions:**
+- `expect_send` replaces `wait_for && send` — hard-fails on timeout, prevents silent cascade
+- `select_option` only sends — does not re-wait for menu prompt already consumed
+- `require_suite` gates abort downstream suites on prerequisite failure
+- All filesystem paths declared as variables — no hardcoded paths in test logic
+- `apk list --installed` uses `grep "^<name>-"` (apk format: `<name>-<version>`)
+- Pre-clean removes all of `/etc/easy-rsa` for cold-start PKI timing accuracy
+- `openvpn` (not `openvpn-openssl`) used as apk install target — resolves to installed variant
 
 ### GitHub Actions CI Workflow — COMPLETED
 See `.github/workflows/test.yml`. Three jobs: `shellcheck` → `unit-tests` → `integration-tests`.
@@ -123,7 +128,10 @@ See `.github/workflows/test.yml`. Three jobs: `shellcheck` → `unit-tests` → 
 
 ### Running Tests Locally
 ```bash
-# Install ShellSpec (pinned — matches CI)
+# Real device integration tests (authoritative)
+OPENWRT_HOST=<device-ip> ./tests/run_tests.sh
+
+# ShellSpec unit tests (no Docker needed)
 SHELLSPEC_VERSION="0.28.1"
 SHELLSPEC_SHA256="350d3de04ba61505c54eda31a3c2ee912700f1758b1a80a284bc08fd8b6c5992"
 curl -fsSL -o /tmp/shellspec-dist.tar.gz \
@@ -131,18 +139,12 @@ curl -fsSL -o /tmp/shellspec-dist.tar.gz \
 echo "${SHELLSPEC_SHA256}  /tmp/shellspec-dist.tar.gz" | sha256sum --check --strict
 tar -xzf /tmp/shellspec-dist.tar.gz -C /tmp
 sudo install -m 755 /tmp/shellspec/shellspec /usr/local/bin/shellspec
-
-# Run only unit tests (no Docker needed)
 shellspec spec/unit/
 
-# Run integration tests (requires Docker)
+# ShellSpec integration tests (requires Docker)
 docker build --build-arg SSH_PUBLIC_KEY="$(cat ~/.ssh/id_rsa.pub)" -t openwrt-ovpn-test ./docker
 shellspec spec/integration/
 ```
-
-### GitHub Actions CI Workflow - COMPLETED
-`.github/workflows/test.yml` — see supply chain notes in section above.
-- Integration tests timeout: 20 minutes (increase if PKI generation exceeds this)
 
 ---
 
@@ -602,7 +604,7 @@ CPU-limited router hardware.
 - [x] `show_crypto_summary()`: reusable summary printed at PKI init and configure_crypto
 - [x] PKI init prints algo summary on completion
 
-### Phase 4: Documentation — PENDING
+### Phase 4: Documentation — IN PROGRESS
 - [ ] Update README: explain EC vs RSA choice, compatibility note for pre-2.4 clients
 - [ ] Update README: note that `gen-dh` is skipped for EC (faster init)
 - [ ] Bump version to v2.8.0 on completion

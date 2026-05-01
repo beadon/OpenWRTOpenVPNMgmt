@@ -93,6 +93,56 @@ refactor(menu): consolidate server control functions
 
 ## Testing Environment
 
+### Real Device (Authoritative)
+
+The authoritative test suite runs on a physical OpenWrt device using `sexpect` to drive
+the interactive menu. This is the only way to test package installation, firewall rules,
+`crond`, and actual VPN tunnel behaviour.
+
+**Setup requirements:**
+- OpenWrt device with SSH key access as root
+- `sexpect` and `openssh-sftp-server` installed on the device
+
+**Run from your Mac:**
+```bash
+OPENWRT_HOST=<device-ip> ./tests/run_tests.sh
+```
+
+**How the harness works:**
+- `tests/run_tests.sh` — Mac-side launcher: SCPs files, pre-cleans device state (including
+  uninstalling packages for Suite 0 cold-start), SSHes in once to run the suite
+- `tests/integration_test.sh` — runs ON the device, drives the menu via sexpect
+- `tests/sexpect_helper.sh` — primitives: `spawn_script`, `expect_send`, `wait_for`, `send`,
+  assertion helpers (`assert_file_exists`, `assert_file_contains`, `assert_file_perms`)
+- Output teed to `tests/last_run.txt`
+
+**Best practices for writing sexpect tests:**
+
+1. **Use `expect_send` not `wait_for && send`** — if `wait_for` times out, `&&` silently
+   skips the send, leaving the session in an unknown state. `expect_send` hard-fails
+   immediately on timeout.
+
+2. **Don't re-wait for the menu prompt in `select_option`** — after each step's final
+   `wait_for "Select an option:"`, the cursor is already past the prompt. Calling
+   `wait_for` again burns the full timeout. Just `send "$1"` directly.
+
+3. **Use `require_suite` as a gate between suites** — if Suite 0 (package install) fails,
+   suites 1–4 will cascade-fail for unrelated reasons. `require_suite` aborts immediately
+   with a clear message.
+
+4. **All paths must be variables** — declare all filesystem paths as variables at the top
+   of `integration_test.sh` (e.g., `OVPN_EASYRSA`, `OVPN_PKI`, `OVPN_CONF`). Never
+   hardcode paths inside test logic or `cleanup()`.
+
+5. **Pre-clean must be complete** — `run_tests.sh` removes all PKI state and uninstalls
+   packages before each run. This ensures Suite 0 exercises a real install and Suite 1
+   measures real cold-start PKI timing.
+
+6. **apk `pkg_is_installed` pattern** — `apk list --installed` outputs `<name>-<version>`,
+   not `<name> <version>`. Use `grep "^<name>-"` not `grep "^<name> "`.
+
+### Docker Container (PKI and Certificate Testing Only)
+
 A Docker-based OpenWRT rootfs container is available for testing:
 
 ```bash
@@ -109,6 +159,9 @@ ssh root@localhost -p 2222
 # Copy script to container for testing
 scp -P 2222 openvpn_server_management.sh root@localhost:/root/
 ```
+
+Note: firewall rules, `crond`, service management, and package installation cannot be
+tested in Docker. Use a real device for those.
 
 ## Versioning
 
