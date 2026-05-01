@@ -44,7 +44,6 @@ expect_send() {
 }
 
 select_option() {
-    wait_for "$MENU_PROMPT"
     send "$1"
 }
 

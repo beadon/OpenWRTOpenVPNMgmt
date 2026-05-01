@@ -24,7 +24,11 @@ echo "Pre-cleaning device state..."
 ssh "root@${OPENWRT_HOST}" \
     'killall sexpect 2>/dev/null; rm -f /tmp/sexpect*.sock /etc/openvpn/server.conf /etc/crontabs/root; rm -rf /etc/easy-rsa/pki /root/ovpn_config_out; mkdir -p /etc/easy-rsa /etc/openvpn; echo "clean"'
 
+LOG="$SCRIPT_DIR/last_run.txt"
 echo "Running integration tests on $OPENWRT_HOST..."
 echo ""
 ssh "root@${OPENWRT_HOST}" \
-    'SCRIPT_PATH=/root/openvpn_server_management.sh /root/integration_test.sh'
+    'SCRIPT_PATH=/root/openvpn_server_management.sh /root/integration_test.sh' \
+    | tee "$LOG"
+echo ""
+echo "Full output saved to: $LOG"
