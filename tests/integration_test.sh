@@ -557,6 +557,56 @@ wait_for "Crypto settings updated" 5
 expect_send "Press Enter" "" 5
 check wait_for "Select an option:" 5
 
+# ── Suite 11: Instance Management ────────────────────────────────────────────
+# option l — list instances (at least 'server' exists from Suite 2 server.conf gen)
+# option i → c — cancel, no change
+# option i → n — create new instance, verify UCI, then switch back to 'server'
+
+printf "\n--- [%s] Suite 11: Instance Management (options i, l) ---\n" "$(ts)"
+
+it "option l lists instances"
+select_option "l"
+wait_for "OpenVPN Instances" 5
+check wait_for "server" 5
+expect_send "Press Enter" "" 5
+check wait_for "Select an option:" 5
+
+it "option i → c cancels without change"
+select_option "i"
+expect_send "Select option" "c" 5
+wait_for "Cancelled" 5
+expect_send "Press Enter" "" 5
+check wait_for "Select an option:" 5
+
+it "option i → n creates new instance 'testvpn'"
+select_option "i"
+expect_send "Select option"         "n"       5
+expect_send "Enter new instance"    "testvpn" 5
+wait_for "Created and selected" 10
+expect_send "Press Enter" "" 5
+check wait_for "Select an option:" 5
+
+it "UCI entry exists for testvpn"
+if uci get openvpn.testvpn >/dev/null 2>&1; then
+    pass
+else
+    fail "UCI entry for testvpn not found"
+fi
+
+it "option i → 1 switches back to server instance"
+select_option "i"
+expect_send "Select option" "1" 5
+wait_for "Selected instance" 5
+expect_send "Press Enter" "" 5
+check wait_for "Select an option:" 5
+
+it "option l shows testvpn in list"
+select_option "l"
+wait_for "OpenVPN Instances" 5
+check wait_for "testvpn" 5
+expect_send "Press Enter" "" 5
+check wait_for "Select an option:" 5
+
 # ── Done ──────────────────────────────────────────────────────────────────────
 
 quit_script
