@@ -392,6 +392,113 @@ check wait_for "Select an option:" 5
 it "key permission restored to 600 after fix"
 check assert_file_perms "$OVPN_PKI/private/$TEST_CLIENT2.key" "600"
 
+# ── Suite 8: Firewall Check and Configure ────────────────────────────────────
+# UCI changes are committed before the restart prompts — we answer 'n' to both
+# network and firewall restarts to avoid dropping the SSH management session.
+# Assertions are against UCI state, which is persisted before any restart.
+
+printf "\n--- [%s] Suite 8: Firewall Check and Configure ---\n" "$(ts)"
+
+it "option 10 runs firewall check"
+select_option "10"
+expect_send "Press Enter" "" 10
+check wait_for "Select an option:" 5
+
+it "option 11 configures VPN firewall (no restart)"
+select_option "11"
+expect_send "Continue with firewall configuration" "yes" 5
+expect_send "Restart network service"               "n"   10
+expect_send "Restart firewall"                      "n"   10
+expect_send "Press Enter"                           ""    10
+check wait_for "Select an option:" 5
+
+it "firewall.ovpn rule created in UCI"
+if uci get firewall.ovpn.name 2>/dev/null | grep -q "Allow-OpenVPN"; then
+    pass
+else
+    fail "firewall.ovpn rule not found in UCI"
+fi
+
+it "firewall.ovpn targets WAN port 1194"
+if uci get firewall.ovpn.dest_port 2>/dev/null | grep -q "1194"; then
+    pass
+else
+    fail "firewall.ovpn dest_port is not 1194"
+fi
+
+it "tun+ interface added to LAN zone"
+if uci get firewall.lan.device 2>/dev/null | grep -q "tun+"; then
+    pass
+else
+    fail "tun+ not found in firewall LAN zone"
+fi
+
+it "VPN network interface created in UCI"
+if uci get network.vpn.device 2>/dev/null | grep -q "tun+"; then
+    pass
+else
+    fail "network.vpn UCI interface not created"
+fi
+
+# ── Suite 9: Server Start and Stop ───────────────────────────────────────────
+# Starting OpenVPN only creates tun0 — it does not touch br-lan or the SSH
+# management interface, so the session is safe throughout.
+
+printf "\n--- [%s] Suite 9: Server Start and Stop ---\n" "$(ts)"
+
+it "option s → 1 starts OpenVPN server"
+select_option "s"
+expect_send "Select action" "1"  5
+# start runs /etc/init.d/openvpn start + sleep 2 — wait for status line then gate
+wait_for "Server started\|already running" 20
+check wait_for "Press Enter" 5
+send ""
+check wait_for "Select an option:" 5
+
+it "OpenVPN process is running"
+if pgrep -f "[/]openvpn .*server" >/dev/null 2>&1; then
+    pass
+else
+    fail "openvpn process not found after start"
+fi
+
+it "tun0 interface exists"
+if ip link show tun0 >/dev/null 2>&1; then
+    pass
+else
+    fail "tun0 interface not found after start"
+fi
+
+it "option s → 2 stops OpenVPN server"
+select_option "s"
+expect_send "Select action"              "2"   5
+expect_send "Stop OpenVPN server"        "yes" 10
+# stop runs /etc/init.d/openvpn stop + sleep 2 — wait for status line then gate
+wait_for "Server stopped\|stopped successfully\|already stopped" 20
+check wait_for "Press Enter" 5
+send ""
+check wait_for "Select an option:" 5
+
+it "OpenVPN process is stopped"
+if pgrep -f "[/]openvpn .*server" >/dev/null 2>&1; then
+    fail "openvpn process still running after stop"
+else
+    pass
+fi
+
+it "tun0 interface removed after stop"
+if ip link show tun0 >/dev/null 2>&1; then
+    fail "tun0 still exists after stop"
+else
+    pass
+fi
+
+it "option s → 4 shows detailed status as STOPPED"
+select_option "s"
+expect_send "Select action" "4" 5
+expect_send "Press Enter"   ""  10
+check wait_for "Select an option:" 5
+
 # ── Done ──────────────────────────────────────────────────────────────────────
 
 quit_script
