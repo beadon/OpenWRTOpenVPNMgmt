@@ -91,6 +91,24 @@ refactor(menu): consolidate server control functions
 - Tested on OpenWRT (state which version)
 - No merge conflicts with `dev` branch
 
+## Testing
+
+CI runs ShellCheck only — it validates syntax and POSIX compliance on every push.
+Unit tests and integration tests require a real OpenWrt device and must be run locally.
+
+### Running Tests Locally
+
+```bash
+# ShellCheck (mirrors CI)
+shellcheck --shell=sh --severity=warning --exclude=SC3043,SC3045 openvpn_server_management.sh
+
+# Unit tests (ShellSpec + busybox ash)
+shellspec --shell "busybox sh" spec/unit/
+
+# Integration tests (sexpect on real hardware — authoritative)
+OPENWRT_HOST=<device-ip> ./tests/run_tests.sh
+```
+
 ## Testing Environment
 
 ### Real Device (Authoritative)
