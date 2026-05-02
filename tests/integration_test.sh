@@ -607,6 +607,27 @@ check wait_for "testvpn" 5
 expect_send "Press Enter" "" 5
 check wait_for "Select an option:" 5
 
+# ── Suite 12: Auto-detect Server Settings ────────────────────────────────────
+# option 4 is read-only: detects port/proto from server.conf and firewall rules,
+# WAN IP from UCI, and prints "Final Settings". No user prompts — returns
+# directly to the main menu after output.
+
+printf "\n--- [%s] Suite 12: Auto-detect Server Settings (option 4) ---\n" "$(ts)"
+
+it "option 4 detects settings from server.conf and prints final summary"
+select_option "4"
+wait_for "Detecting configuration" 5
+# server.conf exists from Suite 2 — port and protocol should be detected
+wait_for "Detected port" 10
+wait_for "Final Settings" 10
+# No Press Enter gate — returns directly to menu; allow time for network detection
+check wait_for "Select an option:" 20
+
+it "option 4 reports a VPN server address"
+select_option "4"
+wait_for "Detected WAN IP\|Detected DDNS" 20
+check wait_for "Select an option:" 20
+
 # ── Done ──────────────────────────────────────────────────────────────────────
 
 quit_script

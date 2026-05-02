@@ -665,26 +665,29 @@ check_ipv6_subnet_conflict() {
 
 # Function to detect IPv6 prefix delegation from WAN
 detect_ipv6_prefix() {
-    local WAN6_IF
-    local wan6_addrs
-    local prefix_delegation
-    local prefix_size
-    local lan_ipv6
-    local lan_prefix
+    local WAN6_IF=""
+    local wan6_addrs=""
+    local prefix_delegation=""
+    local prefix_size=""
+    local lan_ipv6=""
+    local lan_prefix=""
 
     echo "Detecting IPv6 configuration from WAN interface..."
     echo ""
 
-    # Get WAN interface name
+    # Get WAN interface name — network.sh may unset the dest var if no route found,
+    # so keep set +u active until after the empty check.
     . /lib/functions/network.sh
     network_flush_cache
+    set +u
     network_find_wan6 WAN6_IF
-
-    if [ -z "$WAN6_IF" ]; then
+    if [ -z "${WAN6_IF:-}" ]; then
+        set -u
         echo "  No WAN IPv6 interface found"
         echo "  IPv6 may not be configured on this router"
         return 1
     fi
+    set -u
 
     echo "  WAN IPv6 interface: $WAN6_IF"
 
@@ -759,17 +762,17 @@ detect_ipv6_prefix() {
 
 # Auto-Detect DDNS configured name, Fetch server address configured elsewhere
 auto_detect_fqdn() {
-    local DETECTED_PORT
-    local DETECTED_PROTO
-    local DETECTED_POOL
-    local DETECTED_IPV6_POOL
-    local rule_index
-    local rule_name
-    local rule_dest_port
-    local rule_proto
-    local NET_FQDN
-    local NET_IF
-    local NET_ADDR
+    local DETECTED_PORT=""
+    local DETECTED_PROTO=""
+    local DETECTED_POOL=""
+    local DETECTED_IPV6_POOL=""
+    local rule_index=""
+    local rule_name=""
+    local rule_dest_port=""
+    local rule_proto=""
+    local NET_FQDN=""
+    local NET_IF=""
+    local NET_ADDR=""
 
     echo ""
     echo "Script default settings (if no config found):"
@@ -877,12 +880,14 @@ auto_detect_fqdn() {
     # Update DNS based on detected pool
     OVPN_DNS="${OVPN_POOL%.* *}.1"
 
-    # Detect server FQDN/IP
+    # Detect server FQDN/IP — network.sh may unset dest vars; keep set +u active
     NET_FQDN="$(uci -q get ddns.@service[0].lookup_host)"
     . /lib/functions/network.sh
     network_flush_cache
+    set +u
     network_find_wan NET_IF
-    network_get_ipaddr NET_ADDR "${NET_IF}"
+    network_get_ipaddr NET_ADDR "${NET_IF:-}"
+    set -u
     if [ -n "${NET_FQDN}" ]
     then
         OVPN_SERV="${NET_FQDN}"
