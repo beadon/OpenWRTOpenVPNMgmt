@@ -80,7 +80,7 @@ printf "    Started: %s\n\n" "$(ts)"
 
 spawn_script
 
-# ── Suite 0: Package Installation (option 19) ────────────────────────────────
+# ── Suite 0: Package Installation (option 1) ─────────────────────────────────
 
 printf "--- [%s] Suite 0: Package Installation (%s) ---\n" "$(ts)" "$TEST_PKG_MGR"
 
@@ -91,8 +91,8 @@ else
     fail "unknown package manager: $TEST_PKG_MGR"
 fi
 
-it "option 19 installs packages"
-select_option "19"
+it "option 1 installs packages"
+select_option "1"
 expect_send "Continue with installation" "yes" 10
 # pkg_update + pkg_install run unattended; wait up to 120s for download+install
 check wait_for "Installation complete" 120
@@ -118,8 +118,8 @@ require_suite  # suites 1–4 depend on packages being installed
 
 printf "--- [%s] Suite 1: PKI Initialization ---\n" "$(ts)"
 
-it "option 12 completes PKI init"
-select_option "12"
+it "option 3 completes PKI init"
+select_option "3"
 check wait_for "Select an option:" 60
 
 it "PKI directory created"
@@ -160,12 +160,12 @@ else
     pass
 fi
 
-# ── Suite 2: Server Config Generation (option 1) ─────────────────────────────
+# ── Suite 2: Server Config Generation (option 5) ─────────────────────────────
 
 printf "\n--- [%s] Suite 2: Server Config Generation ---\n" "$(ts)"
 
-it "option 1 generates server.conf"
-select_option "1"
+it "option 5 generates server.conf"
+select_option "5"
 expect_send "Press Enter" ""    5   # IPv6 leak warning gate
 expect_send "Continue" "y"     10  # new conf: Continue? (y/n)
 expect_send "[Vv]iew" "n"      15  # View generated config? (y/n)
@@ -187,12 +187,12 @@ check assert_file_contains "$OVPN_CONF" "dh none"
 it "server.conf has tls-crypt-v2"
 check assert_file_contains "$OVPN_CONF" "tls-crypt-v2"
 
-# ── Suite 3: Client Certificate Creation (option 4) ──────────────────────────
+# ── Suite 3: Client Certificate Creation (option 12) ─────────────────────────
 
 printf "\n--- [%s] Suite 3: Client Certificate Creation ---\n" "$(ts)"
 
-it "option 4 creates client certificate"
-select_option "4"
+it "option 12 creates client certificate"
+select_option "12"
 expect_send "Enter client name:" "$TEST_CLIENT" 5
 expect_send "Generate" "y"                      10  # Generate .ovpn config file?
 expect_send "Daemon restart" "n"                10  # OpenVPN Daemon restart
@@ -225,8 +225,8 @@ check assert_file_contains "$OVPN_PROFILE" "<tls-crypt-v2>"
 
 printf "\n--- [%s] Suite 4: CRL Revocation and Auto-renewal ---\n" "$(ts)"
 
-it "option 6 revokes client"
-select_option "6"
+it "option 14 revokes client"
+select_option "14"
 expect_send "Enter client name to revoke:" "$TEST_CLIENT" 5
 expect_send "Are you sure" "yes"                           5
 expect_send "Restart" "n"                                  10

@@ -4082,57 +4082,72 @@ while true; do
     echo "=================================================="
     echo "Currently managing: [$OVPN_INSTANCE]"
     echo ""
+    echo "First-Time Setup:"
+    echo "  1) Install required packages (at, openvpn, openvpn-easy-rsa)"
+    echo "  2) Configure cryptography settings (currently: ${OVPN_CRYPTO_ALGO})"
+    echo "  3) Initialize EasyRSA / PKI"
+    echo "  4) Auto-detect server settings"
+    echo "  5) Generate/Update server.conf"
+    echo "  6) Install LuCI OpenVPN and File Manager web interface"
+    echo ""
     echo "Instance Management:"
     echo "  i) Select/Create OpenVPN instance"
     echo "  l) List all OpenVPN instances"
     echo ""
     echo "Server Configuration:"
-    echo "  0) Auto-Detect server settings"
-    echo "  1) Generate/Update server.conf"
-    echo "  2) Restore server.conf from backup"
-    echo "  3) Toggle IPv6 support (Currently: $OVPN_IPV6_ENABLE)"
-    echo "  p) Configure performance (bandwidth limiting)"
-    echo ""
-    echo "Server Control:"
+    echo "  7) Restore server.conf from backup"
+    echo "  8) Toggle IPv6 support (currently: $OVPN_IPV6_ENABLE)"
+    echo "  9) Configure performance (bandwidth limiting)"
     echo "  s) Start/Stop/Restart server"
     echo ""
-    echo "Client Certificate Management:"
-    echo "  4) Create client certificate"
-    echo "  5) List client certificates"
-    echo "  6) Revoke client certificate"
-    echo "  7) Check certificate expiration"
-    echo "  8) Renew certificate"
-    echo "  9) Show certificate details"
+    echo "Firewall Management:"
+    echo " 10) Check firewall configuration"
+    echo " 11) Configure VPN firewall access"
+    echo ""
+    echo "Client Certificates:"
+    echo " 12) Create client certificate"
+    echo " 13) List client certificates"
+    echo " 14) Revoke client certificate"
+    echo " 15) Check certificate expiration"
+    echo " 16) Renew certificate"
+    echo " 17) Show certificate details"
     echo "  r) CRL management (check/renew/auto-renewal)"
     echo ""
     echo "Client VPN Profiles:"
-    echo " 10) Generate all .ovpn config files"
-    echo " 11) Generate single .ovpn config file"
+    echo " 18) Generate all .ovpn config files"
+    echo " 19) Generate single .ovpn config file"
     echo ""
-    echo "Setup & Integration:"
-    echo "  k) Configure cryptography settings (currently: ${OVPN_CRYPTO_ALGO})"
-    echo " 12) Initialize EasyRSA for OpenVPN"
-    echo " 13) Install LuCI OpenVPN and File Manager web interface"
+    echo "Monitoring & Diagnostics:"
+    echo " 20) Monitor VPN usage"
+    echo " 21) Diagnose IPv6 routing issues"
+    echo " 22) Check/Fix file permissions"
     echo ""
-    echo "Firewall Management:"
-    echo " 14) Check firewall configuration"
-    echo " 15) Configure VPN firewall access"
-    echo ""
-    echo "VPN Monitoring:"
-    echo " 16) Monitor VPN address usage"
-    echo ""
-    echo "Troubleshooting:"
-    echo " 17) Diagnose IPv6 routing issues"
-    echo " 18) Check/Fix file permissions"
-    echo ""
-    echo "Package Management:"
-    echo " 19) Install required packages (at, openvpn, openvpn-easy-rsa)"
-    echo ""
-    echo " 20) Exit"
+    echo "  x) Exit"
     echo ""
     read -p "Select an option: " choice
-    
+
     case $choice in
+        1)
+            install_needed_packages
+            read -p "Press Enter to continue..."
+            ;;
+        2)
+            configure_crypto
+            read -p "Press Enter to continue..."
+            ;;
+        3)
+            key_management_first_time
+            ;;
+        4)
+            auto_detect_fqdn
+            ;;
+        5)
+            generate_server_conf
+            ;;
+        6)
+            install_luci_openvpn_filemanager
+            read -p "Press Enter to continue..."
+            ;;
         i|I)
             select_openvpn_instance
             read -p "Press Enter to continue..."
@@ -4141,20 +4156,14 @@ while true; do
             list_openvpn_instances
             read -p "Press Enter to continue..."
             ;;
-	0)
-            auto_detect_fqdn
-            ;;
-        1)
-            generate_server_conf
-            ;;
-        2)
+        7)
             restore_server_conf
             ;;
-        3)
+        8)
             toggle_ipv6
             read -p "Press Enter to continue..."
             ;;
-        p|P)
+        9)
             configure_performance
             read -p "Press Enter to continue..."
             ;;
@@ -4162,24 +4171,32 @@ while true; do
             control_openvpn_server
             read -p "Press Enter to continue..."
             ;;
-        4)
+        10)
+            check_firewall
+            read -p "Press Enter to continue..."
+            ;;
+        11)
+            configure_vpn_firewall
+            read -p "Press Enter to continue..."
+            ;;
+        12)
             create_client
             ;;
-        5)
+        13)
             list_clients
             read -p "Press Enter to continue..."
             ;;
-        6)
+        14)
             revoke_client
             ;;
-        7)
+        15)
             check_expiration
             read -p "Press Enter to continue..."
             ;;
-        8)
+        16)
             renew_certificate
             ;;
-        9)
+        17)
             show_cert_details
             read -p "Press Enter to continue..."
             ;;
@@ -4208,11 +4225,11 @@ while true; do
             esac
             read -p "Press Enter to continue..."
             ;;
-        10)
+        18)
             generate_all_ovpn
             read -p "Press Enter to continue..."
             ;;
-        11)
+        19)
             echo ""
             read -p "Enter client name: " client_name
             if [ -n "$client_name" ]; then
@@ -4222,42 +4239,19 @@ while true; do
             fi
             read -p "Press Enter to continue..."
             ;;
-        k|K)
-            configure_crypto
-            read -p "Press Enter to continue..."
-            ;;
-        12)
-            key_management_first_time
-            ;;
-        13)
-            install_luci_openvpn_filemanager
-            read -p "Press Enter to continue..."
-            ;;
-        14)
-            check_firewall
-            read -p "Press Enter to continue..."
-            ;;
-        15)
-            configure_vpn_firewall
-            read -p "Press Enter to continue..."
-            ;;
-        16)
+        20)
             monitor_vpn_usage
             read -p "Press Enter to continue..."
             ;;
-        17)
+        21)
             diagnose_ipv6_routing
             read -p "Press Enter to continue..."
             ;;
-        18)
+        22)
             check_fix_permissions
             read -p "Press Enter to continue..."
             ;;
-        19)
-            install_needed_packages
-            read -p "Press Enter to continue..."
-            ;;
-        20)
+        x|X)
             echo "Exiting..."
             exit 0
             ;;

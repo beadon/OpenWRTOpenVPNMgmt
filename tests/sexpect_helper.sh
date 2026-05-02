@@ -67,7 +67,7 @@ after_action() {
 }
 
 quit_script() {
-    send "20"
+    send "x"
     sexpect -sock "$SEXPECT_SOCK" wait 2>/dev/null || true
 }
 

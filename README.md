@@ -30,7 +30,7 @@ Tired of managing keys, ovpn files and all different parts piecemeal? Use this s
 
 - **OpenWRT 25 Support** - Automatic detection of `apk` (OpenWRT 25+) or `opkg` (older versions) for all package operations
 - **Install Required Packages Menu** - New menu option 19 installs `at`, `openvpn-openssl`, and `openvpn-easy-rsa` in one step
-- **LuCI File Manager** - Option 13 now also installs `luci-app-filemanager` for easy .ovpn file downloads via the web interface
+- **LuCI File Manager** - Option 6 now also installs `luci-app-filemanager` for easy .ovpn file downloads via the web interface
 - **Exit moved to option 20**
 
 ## What's New in v2.5.0
@@ -172,10 +172,10 @@ This guide assumes you're starting from scratch with nothing installed. Follow t
 
 ### Step 1: Install Required Packages
 
-**Menu Option: 19**
+**Menu Option: 1**
 
 ```
-19) Install required packages (at, openvpn, openvpn-easy-rsa)
+1) Install required packages (at, openvpn, openvpn-easy-rsa)
 Continue with installation? (yes/no): yes
 ```
 
@@ -197,10 +197,10 @@ The script detects the package manager at startup and uses the correct package n
 
 ### Step 2: Install LuCI Web Interface (Optional but Recommended)
 
-**Menu Option: 13**
+**Menu Option: 6**
 
 ```
-13) Install LuCI OpenVPN and File Manager web interface
+6) Install LuCI OpenVPN and File Manager web interface
 Continue with installation? (yes/no): yes
 ```
 
@@ -218,10 +218,10 @@ This installs `luci-app-openvpn` and `luci-app-filemanager` which provide:
 
 ### Step 3: Initialize EasyRSA
 
-**Menu Option: 12**
+**Menu Option: 3**
 
 ```
-12) Initialize EasyRSA for OpenVPN
+3) Initialize EasyRSA / PKI
 ```
 
 This will:
@@ -242,16 +242,16 @@ The script defaults to **EC (Elliptic Curve)** with the `prime256v1` curve (NIST
 | Client compatibility | OpenVPN 2.4+ (2017+) | All OpenVPN versions |
 | Security | Strong — equivalent to RSA 3072+ | Strong at 2048-bit |
 
-To use RSA instead, edit the `OVPN_CRYPTO_ALGO` variable at the top of the script before running Step 3, or use Menu Option `k) Configure cryptography settings`. Once the PKI is initialized the algorithm cannot be changed without re-initializing (which revokes all existing certificates).
+To use RSA instead, edit the `OVPN_CRYPTO_ALGO` variable at the top of the script before running Step 3, or use Menu Option `2) Configure cryptography settings`. Once the PKI is initialized the algorithm cannot be changed without re-initializing (which revokes all existing certificates).
 
 **Important:** This step takes several minutes for RSA (DH generation). EC completes significantly faster.
 
 ### Step 4: Auto-Detect Server Settings
 
-**Menu Option: 0**
+**Menu Option: 4**
 
 ```
-0) Auto-Detect server settings
+4) Auto-detect server settings
 ```
 
 This automatically detects:
@@ -262,7 +262,7 @@ This automatically detects:
 
 Review the detected settings. The script will use these for configuration generation.
 
-**Note:** IPv6 support is disabled by default. If you want to enable IPv6 for your VPN, use Menu Option 3 after reviewing the auto-detected IPv6 settings (Step 5 below).
+**Note:** IPv6 support is disabled by default. If you want to enable IPv6 for your VPN, use Menu Option 8 after reviewing the auto-detected IPv6 settings (Step 5 below).
 
 **DDNS Support:**
 
@@ -272,7 +272,7 @@ The auto-detect feature will automatically detect your DDNS hostname if configur
 1. Follow the official OpenWrt DDNS guide: https://openwrt.org/docs/guide-user/services/ddns/client
 2. Configure your DDNS service provider in LuCI or UCI
 3. Verify DDNS is working: `nslookup your-hostname.dyndns.org`
-4. Run this script's auto-detect (Option 0) - it will automatically use your DDNS hostname
+4. Run this script's auto-detect (Option 4) - it will automatically use your DDNS hostname
 
 If DDNS is not configured, the script will fall back to using your current WAN IP address.
 
@@ -280,10 +280,10 @@ If DDNS is not configured, the script will fall back to using your current WAN I
 
 **Note:** IPv6 is disabled by default to avoid configuration conflicts. Only enable if you understand IPv6 networking and have verified your router has proper IPv6 prefix delegation from your ISP.
 
-**Menu Option: 3**
+**Menu Option: 8**
 
 ```
-3) Toggle IPv6 support (Currently: no)
+8) Toggle IPv6 support (Currently: no)
 Enable IPv6 support? (yes/no): yes
 
 Select IPv6 mode:
@@ -302,10 +302,10 @@ Enter max clients limit (default 253): 100
 
 ### Step 5.5: Configure Performance Settings (Optional)
 
-**Menu Option: p**
+**Menu Option: 9**
 
 ```
-p) Configure performance (bandwidth limiting)
+9) Configure performance (bandwidth limiting)
 
 Current Performance Settings:
 
@@ -371,10 +371,10 @@ Enter bandwidth limit in bytes per second:
 
 ### Step 6: Generate Server Configuration
 
-**Menu Option: 1**
+**Menu Option: 5**
 
 ```
-1) Generate/Update server.conf
+5) Generate/Update server.conf
 Continue and overwrite? (yes/no): yes
 View the generated configuration? (y/n): y
 ```
@@ -392,10 +392,10 @@ This creates `/etc/openvpn/server.conf` with:
 
 ### Step 7: Configure Firewall
 
-**Menu Option: 15**
+**Menu Option: 11**
 
 ```
-15) Configure VPN firewall access
+11) Configure VPN firewall access
 Continue with firewall configuration? (yes/no): yes
 Restart firewall to apply changes? (y/n): y
 ```
@@ -431,7 +431,7 @@ Restart firewall to apply changes? (y/n): y
 **Verify Firewall:**
 
 ```
-14) Check firewall configuration
+10) Check firewall configuration
 ```
 
 **Confirms:**
@@ -456,10 +456,10 @@ Or manually:
 
 ### Step 9: Create Your First Client Certificate
 
-**Menu Option: 4**
+**Menu Option: 12**
 
 ```
-4) Create new client certificate
+12) Create new client certificate
 Enter client name: username.laptop
 Generate .ovpn config file? (y/n): y
 ```
@@ -499,7 +499,7 @@ scp root@192.168.1.1:/root/ovpn_config_out/bill.laptop.ovpn ~/Downloads/
 
 **Or via LuCI Web Interface:**
 
-Install the file manager via menu option 13, then navigate to System → File Browser
+Install the file manager via menu option 6, then navigate to System → File Browser
 
 ### Step 11: Connect Your Client
 
@@ -557,13 +557,13 @@ One the client device (the laptop or mobile device) open a browser while the VPN
     - Shows instance status, config file path, and running state
 
 ## LuCI Integration
-  - Install `luci-app-openvpn` and `luci-app-filemanager` with one command (menu option 13)
+  - Install `luci-app-openvpn` and `luci-app-filemanager` with one command (menu option 6)
   - Automatic package installation using `apk` (OpenWRT 25+) or `opkg` (older versions)
   - Changes made in LuCI web interface appear in this script and vice versa
 
 ### Viewing VPN Tunnel in LuCI
 
-After running **Menu Option 15** (Configure VPN firewall access), the VPN tunnel interface will appear in LuCI:
+After running **Menu Option 11** (Configure VPN firewall access), the VPN tunnel interface will appear in LuCI:
 
 **Location:** LuCI → Network → Interfaces
 
@@ -588,10 +588,10 @@ After running **Menu Option 15** (Configure VPN firewall access), the VPN tunnel
 **Important:** The `vpn` interface is managed by OpenVPN. Don't edit it directly in LuCI - use this script (Menu Options) or edit `/etc/openvpn/server.conf` instead.
 
 **Troubleshooting:** If VPN interface doesn't appear in LuCI:
-1. Run Menu Option 15 to create UCI network interface
+1. Run Menu Option 11 to create UCI network interface
 2. Restart network service: `/etc/init.d/network restart`
 3. Refresh LuCI page
-4. Check Menu Option 14 for verification
+4. Check Menu Option 10 for verification
 
 
 ## OpenVPN Monitoring
@@ -619,10 +619,10 @@ After running **Menu Option 15** (Configure VPN firewall access), the VPN tunnel
 
 ### Monitor VPN Status
 
-**Menu Option: 16**
+**Menu Option: 20**
 
 ```
-16) Monitor VPN address usage (IPv4 & IPv6)
+20) Monitor VPN usage
 Select instance to monitor: 1
 ```
 
@@ -635,8 +635,8 @@ Shows:
 ### Create Additional Clients
 
 ```
-**Menu Option: 4** (Create certificate)
-**Menu Option: 11** (Generate single .ovpn file)
+**Menu Option: 12** (Create certificate)
+**Menu Option: 19** (Generate single .ovpn file)
 ```
 
 ### Manage Multiple Server Instances
@@ -655,10 +655,10 @@ Enter new instance name: office_vpn
 
 ### Revoke a Client Certificate
 
-**Menu Option: 6**
+**Menu Option: 14**
 
 ```
-6) Revoke client certificate
+14) Revoke client certificate
 Enter client name to revoke: laptop
 Are you sure? (yes/no, 30s timeout): yes
 Revoking certificate for laptop...
@@ -699,20 +699,20 @@ The script also warns at startup if the CRL is expired or within 30 days of expi
 
 ### Check Certificate Expiration
 
-**Menu Option: 7**
+**Menu Option: 15**
 
 ```
-7) Check certificate expiration
+15) Check certificate expiration
 ```
 
 Shows expiration status for all certificates.
 
 ### Check/Fix File Permissions
 
-**Menu Option: 18**
+**Menu Option: 22**
 
 ```
-18) Check/Fix file permissions
+22) Check/Fix file permissions
 Fix all permission issues now? (yes/no): yes
 ```
 
@@ -818,10 +818,10 @@ The `at` utility (for scheduling) is automatically installed if not present:
 
 Safe restart with connection checking is automatically used in:
 - Server Control menu (Menu Option 's', Action 3)
-- After generating server configuration (Menu Option 1)
-- After restoring configuration from backup (Menu Option 2)
-- After creating new client certificates (Menu Option 4)
-- After revoking client certificates (Menu Option 6)
+- After generating server configuration (Menu Option 5)
+- After restoring configuration from backup (Menu Option 7)
+- After creating new client certificates (Menu Option 12)
+- After revoking client certificates (Menu Option 14)
 
 <details>
 <summary><strong>Troubleshooting</strong> (click to expand)</summary>
@@ -832,8 +832,8 @@ Safe restart with connection checking is automatically used in:
 
 **Use the built-in diagnostic tool first:**
 ```bash
-# Run from script Menu Option 17
-17) Diagnose IPv6 routing issues
+# Run from script Menu Option 21
+21) Diagnose IPv6 routing issues
 ```
 
 This will automatically check all common issues below.
@@ -977,8 +977,8 @@ curl -4 https://ifconfig.co
 
 **Use the built-in permission checker first:**
 ```bash
-# Run from script Menu Option 18
-18) Check/Fix file permissions
+# Run from script Menu Option 22
+22) Check/Fix file permissions
 ```
 
 This will automatically check and optionally fix all permission issues.
@@ -1446,7 +1446,7 @@ ip -6 addr show tun0
 ```
 
 **3. Monitor IPv6 usage:**
-- Run **Option 16** in the script
+- Run **Option 20** in the script
 - Select the server instance
 - View IPv6 addresses and connected clients
 
@@ -1540,11 +1540,11 @@ Then restart: `/etc/init.d/openvpn restart server`
 Monitor and limit IPv6 address usage:
 
 **Check current usage:**
-- Run **Option 16** (Monitor VPN address usage)
+- Run **Option 20** (Monitor VPN usage)
 - Shows: active IPv6 addresses, connected clients, remaining capacity
 
 **Adjust pool size:**
-- Run **Option 3** (Toggle IPv6 support)
+- Run **Option 8** (Toggle IPv6 support)
 - Select **Option 3** (Change max clients limit)
 - Enter new limit (e.g., 50, 100, 253)
 
@@ -1679,7 +1679,7 @@ cat /tmp/hosts/odhcpd
 logread | grep odhcpd
 ```
 
-**Use the script's monitoring (Option 16):**
+**Use the script's monitoring (Option 20):**
 - Shows connected clients
 - Displays IPv6 addresses in use
 - Works with both static and DHCPv6 modes
