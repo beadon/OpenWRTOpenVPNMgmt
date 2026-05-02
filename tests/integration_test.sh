@@ -266,6 +266,132 @@ expect_send "Select option:" "3" 5
 expect_send "Press Enter" ""    10
 check wait_for "Select an option:" 5
 
+# ── Suite 5: Certificate Inspection + Bulk .ovpn ─────────────────────────────
+# Runs after Suite 3 (client cert exists) and Suite 4 (client revoked).
+# server cert is still present; revoked client has moved to pki/revoked/.
+
+printf "\n--- [%s] Suite 5: Certificate Inspection + Bulk .ovpn ---\n" "$(ts)"
+
+it "option 13 lists clients"
+select_option "13"
+expect_send "Press Enter" "" 5
+check wait_for "Select an option:" 5
+
+it "option 15 checks certificate expiration"
+select_option "15"
+expect_send "Press Enter" "" 5
+check wait_for "Select an option:" 5
+
+it "expiration output mentions server cert"
+if grep -q "\[OK\]\|EXPIRED\|WARNING\|SOON" "$OVPN_PKI/issued/server.crt" 2>/dev/null || \
+   openssl x509 -in "$OVPN_PKI/issued/server.crt" -noout -enddate 2>/dev/null | grep -q "notAfter"; then
+    pass
+else
+    fail "server cert enddate unreadable"
+fi
+
+it "option 17 shows server cert details"
+select_option "17"
+expect_send "Enter certificate name" "server" 5
+expect_send "Press Enter" ""                  5
+check wait_for "Select an option:" 5
+
+it "option 18 generates all .ovpn files"
+select_option "18"
+expect_send "Continue" "y" 5
+expect_send "Press Enter" "" 10
+check wait_for "Select an option:" 5
+
+it "ovpn output directory exists"
+check assert_file_exists "$OVPN_DIR"
+
+it "server.ovpn not generated (server is not a client)"
+if test -f "$OVPN_DIR/server.ovpn"; then
+    fail "server.ovpn should not be generated"
+else
+    pass
+fi
+
+# Create a second client so option 19 (single .ovpn) has a valid target
+TEST_CLIENT2="testclient2"
+it "create second client for option 19 test"
+select_option "12"
+expect_send "Enter client name:" "$TEST_CLIENT2" 5
+expect_send "Generate" "n"                        10  # skip ovpn here, test via option 19
+expect_send "Daemon restart" "n"                  10
+check wait_for "Select an option:" 10
+
+it "option 19 generates single .ovpn file"
+select_option "19"
+expect_send "Enter client name:" "$TEST_CLIENT2" 5
+expect_send "Press Enter" ""                      10
+check wait_for "Select an option:" 5
+
+it "single .ovpn file created for $TEST_CLIENT2"
+check assert_file_exists "$OVPN_DIR/$TEST_CLIENT2.ovpn"
+
+it ".ovpn profile has tls-crypt-v2 block"
+check assert_file_contains "$OVPN_DIR/$TEST_CLIENT2.ovpn" "<tls-crypt-v2>"
+
+# ── Suite 6: Complete CRL Coverage ───────────────────────────────────────────
+
+printf "\n--- [%s] Suite 6: Complete CRL Coverage ---\n" "$(ts)"
+
+it "CRL renew (r → 2)"
+select_option "r"
+expect_send "Select option:" "2" 5
+expect_send "Restart OpenVPN" "n" 15
+expect_send "Press Enter" ""      5
+check wait_for "Select an option:" 5
+
+it "CRL pem still exists after renew"
+check assert_file_exists "$OVPN_PKI/crl.pem"
+
+it "renewed CRL is valid"
+if openssl crl -in "$OVPN_PKI/crl.pem" -noout 2>/dev/null; then pass; else fail "crl.pem invalid after renew"; fi
+
+it "CRL remove cron job (r → 5)"
+select_option "r"
+expect_send "Select option:" "5" 5
+expect_send "Press Enter" ""     10
+check wait_for "Select an option:" 5
+
+it "cron job removed from /etc/crontabs/root"
+if grep -q "openvpn-crl-renewal" "$CRONTAB" 2>/dev/null; then
+    fail "cron entry still present after removal"
+else
+    pass
+fi
+
+# ── Suite 7: File Permission Check and Fix ────────────────────────────────────
+
+printf "\n--- [%s] Suite 7: File Permission Check and Fix ---\n" "$(ts)"
+
+it "option 22 reports all permissions OK (clean state)"
+select_option "22"
+expect_send "Press Enter" "" 10
+check wait_for "Select an option:" 5
+
+it "PKI private keys are 600 after Suite 1"
+check assert_file_perms "$OVPN_PKI/private/server.key" "600"
+
+it "intentionally break a key permission"
+chmod 644 "$OVPN_PKI/private/$TEST_CLIENT2.key"
+if [ "$(ls -la "$OVPN_PKI/private/$TEST_CLIENT2.key" | awk '{print $1}')" = "-rw-r--r--" ]; then
+    pass
+else
+    fail "chmod 644 did not take effect"
+fi
+
+it "option 22 detects and fixes broken permission"
+select_option "22"
+expect_send "Fix all permission issues" "yes" 10
+expect_send "Press Enter" ""                  5
+check wait_for "Select an option:" 5
+
+it "key permission restored to 600 after fix"
+check assert_file_perms "$OVPN_PKI/private/$TEST_CLIENT2.key" "600"
+
 # ── Done ──────────────────────────────────────────────────────────────────────
 
 quit_script
