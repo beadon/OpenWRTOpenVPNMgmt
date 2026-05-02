@@ -499,6 +499,64 @@ expect_send "Select action" "4" 5
 expect_send "Press Enter"   ""  10
 check wait_for "Select an option:" 5
 
+# ── Suite 10: Crypto Config Menu ─────────────────────────────────────────────
+# Tests option 2 sub-menu: EC with prime256v1, EC with secp384r1, RSA 2048,
+# RSA 4096, and Cancel. Settings are in-memory only — PKI is not re-initialised.
+# Each sub-case ends with "Press Enter to continue" from the case handler.
+
+printf "\n--- [%s] Suite 10: Crypto Config Menu (option 2) ---\n" "$(ts)"
+
+it "option 2 → 1 → 1 sets EC prime256v1"
+select_option "2"
+expect_send "Select algorithm"  "1" 5
+expect_send "Select curve"      "1" 5
+wait_for "Crypto settings updated" 5
+check wait_for "prime256v1" 5
+expect_send "Press Enter" "" 5
+check wait_for "Select an option:" 5
+
+it "option 2 → 1 → 2 sets EC secp384r1"
+select_option "2"
+expect_send "Select algorithm"  "1" 5
+expect_send "Select curve"      "2" 5
+wait_for "Crypto settings updated" 5
+check wait_for "secp384r1" 5
+expect_send "Press Enter" "" 5
+check wait_for "Select an option:" 5
+
+it "option 2 → 2 → 1 sets RSA 2048"
+select_option "2"
+expect_send "Select algorithm"  "2" 5
+expect_send "Select key size"   "1" 5
+wait_for "Crypto settings updated" 5
+check wait_for "2048" 5
+expect_send "Press Enter" "" 5
+check wait_for "Select an option:" 5
+
+it "option 2 → 2 → 2 sets RSA 4096"
+select_option "2"
+expect_send "Select algorithm"  "2" 5
+expect_send "Select key size"   "2" 5
+wait_for "Crypto settings updated" 5
+check wait_for "4096" 5
+expect_send "Press Enter" "" 5
+check wait_for "Select an option:" 5
+
+it "option 2 → 3 cancels (no change)"
+select_option "2"
+expect_send "Select algorithm"  "3" 5
+wait_for "Cancelled" 5
+expect_send "Press Enter" "" 5
+check wait_for "Select an option:" 5
+
+it "option 2 restore EC prime256v1 for remaining suites"
+select_option "2"
+expect_send "Select algorithm"  "1" 5
+expect_send "Select curve"      "1" 5
+wait_for "Crypto settings updated" 5
+expect_send "Press Enter" "" 5
+check wait_for "Select an option:" 5
+
 # ── Done ──────────────────────────────────────────────────────────────────────
 
 quit_script
