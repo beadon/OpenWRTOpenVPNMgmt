@@ -450,7 +450,7 @@ it "option s → 1 starts OpenVPN server"
 select_option "s"
 expect_send "Select action" "1"  5
 # start runs /etc/init.d/openvpn start + sleep 2 — wait for status line then gate
-wait_for "Server started\|already running" 20
+wait_for "Server started\|already running" 8
 check wait_for "Press Enter" 5
 send ""
 check wait_for "Select an option:" 5
@@ -472,9 +472,9 @@ fi
 it "option s → 2 stops OpenVPN server"
 select_option "s"
 expect_send "Select action"              "2"   5
-expect_send "Stop OpenVPN server"        "yes" 10
+expect_send "Stop OpenVPN server"        "yes" 5
 # stop runs /etc/init.d/openvpn stop + sleep 2 — wait for status line then gate
-wait_for "Server stopped\|stopped successfully\|already stopped" 20
+wait_for "Server stopped\|stopped successfully\|already stopped" 8
 check wait_for "Press Enter" 5
 send ""
 check wait_for "Select an option:" 5
@@ -627,6 +627,47 @@ it "option 4 reports a VPN server address"
 select_option "4"
 wait_for "Detected WAN IP\|Detected DDNS" 20
 check wait_for "Select an option:" 20
+
+# ── Suite 13: Config Mutations (options 7, 8, 9) ─────────────────────────────
+# option 7 — restore server.conf from backup (backup created by Suite 2 option 5)
+# option 8 — toggle IPv6 (default disabled; answer 'no' to keep disabled)
+# option 9 — configure performance: cancel, then set bandwidth limit
+# option 7 has no Press Enter gate — returns directly to menu.
+
+printf "\n--- [%s] Suite 13: Config Mutations (options 7, 8, 9) ---\n" "$(ts)"
+
+it "option 7 restores server.conf from backup (no restart)"
+select_option "7"
+expect_send "Backup found.*Continue\|Continue" "yes" 5
+wait_for "Configuration restored" 5
+expect_send "Restart OpenVPN" "n" 5
+check wait_for "Select an option:" 5
+
+it "server.conf still exists after restore"
+check assert_file_exists "$OVPN_CONF"
+
+it "option 8 shows IPv6 status and cancels when answered 'no'"
+select_option "8"
+wait_for "IPv6 Configuration" 5
+wait_for "currently DISABLED\|currently ENABLED" 5
+expect_send "Enable IPv6\|Select option" "no" 5
+expect_send "Press Enter" "" 5
+check wait_for "Select an option:" 5
+
+it "option 9 → 2 cancels performance config"
+select_option "9"
+expect_send "Select option" "2" 5
+wait_for "Cancelled" 5
+expect_send "Press Enter" "" 5
+check wait_for "Select an option:" 5
+
+it "option 9 → 1 sets bandwidth limit"
+select_option "9"
+expect_send "Select option"          "1"       5
+expect_send "Enter bandwidth limit"  "1000000" 5
+wait_for "Bandwidth limit set to" 5
+expect_send "Press Enter" "" 5
+check wait_for "Select an option:" 5
 
 # ── Done ──────────────────────────────────────────────────────────────────────
 
