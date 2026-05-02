@@ -123,8 +123,11 @@ cleanup() {
     done
 }
 
-# Register cleanup trap for exit and common signals
-trap cleanup EXIT INT TERM HUP
+# Register cleanup trap for exit and common signals.
+# HUP is separated: SSH session drop must exit, not just clean up, otherwise
+# read -p loops on the deleted PTY burning 100% CPU indefinitely.
+trap cleanup EXIT INT TERM
+trap 'cleanup; exit 0' HUP
 
 # Register a temp file for automatic cleanup
 register_temp() {
@@ -4124,7 +4127,7 @@ while true; do
     echo ""
     echo "  x) Exit"
     echo ""
-    read -p "Select an option: " choice
+    read -p "Select an option: " choice || exit 0
 
     case $choice in
         1)
