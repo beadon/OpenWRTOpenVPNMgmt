@@ -1,0 +1,9 @@
+repos:
+  - repo: local
+    hooks:
+      - id: shellcheck
+        name: shellcheck
+        language: system
+        entry: shellcheck
+        args: ["--exclude=SC3043,SC3045", "--shell=sh", "--severity=warning"]
+        files: \.sh$

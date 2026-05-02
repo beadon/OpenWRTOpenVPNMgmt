@@ -96,10 +96,28 @@ refactor(menu): consolidate server control functions
 Install the required tools via Homebrew before running any local checks:
 
 ```bash
-brew install shellcheck
+brew install shellcheck pre-commit
 ```
 
-That is the only Mac-side build dependency. `sexpect` and `busybox` run on the OpenWrt device itself, not on your Mac.
+Then install the git pre-commit hook into your local clone:
+
+```bash
+pre-commit install
+```
+
+After this, `shellcheck` runs automatically on every `git commit`. No manual invocation needed.
+
+`sexpect` and `busybox` run on the OpenWrt device itself, not on your Mac.
+
+### VS Code
+
+Open the repo in VS Code and accept the prompt to install the recommended extension (`timonwong.shellcheck`), or install it manually:
+
+```bash
+code --install-extension timonwong.shellcheck
+```
+
+The extension uses the project's `.vscode/settings.json` to run shellcheck with the correct flags on every keystroke. The pre-commit hook is a safety net for commits made outside the IDE.
 
 ## Testing
 

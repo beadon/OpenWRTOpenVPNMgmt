@@ -14,7 +14,6 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 
 # Path constants — must match integration_test.sh and openvpn_server_management.sh
 OVPN_EASYRSA="/etc/easy-rsa"
-OVPN_PKI="$OVPN_EASYRSA/pki"
 OVPN_CONF="/etc/openvpn/server.conf"
 OVPN_DIR="/root/ovpn_config_out"
 CRONTAB="/etc/crontabs/root"
@@ -28,6 +27,7 @@ scp "$REPO_ROOT/openvpn_server_management.sh" \
 ssh "root@${OPENWRT_HOST}" 'chmod +x /root/integration_test.sh /root/sexpect_helper.sh /root/openvpn_server_management.sh'
 
 echo "Pre-cleaning device state..."
+# shellcheck disable=SC2087
 ssh "root@${OPENWRT_HOST}" "sh -s" <<CLEAN
 set -e
 killall sexpect 2>/dev/null || true
