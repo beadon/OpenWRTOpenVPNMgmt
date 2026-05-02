@@ -31,6 +31,8 @@ echo "Pre-cleaning device state..."
 ssh "root@${OPENWRT_HOST}" "sh -s" <<CLEAN
 set -e
 killall sexpect 2>/dev/null || true
+killall openvpn_server_management.sh 2>/dev/null || true
+kill $(pgrep -f "openvpn_server_management") 2>/dev/null || true
 rm -f /tmp/sexpect*.sock "$OVPN_CONF" "$CRONTAB"
 rm -rf "$OVPN_EASYRSA" "$OVPN_DIR"
 mkdir -p "$OVPN_EASYRSA" "$(dirname "$OVPN_CONF")"
