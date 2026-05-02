@@ -23,7 +23,7 @@ set -u
 ###############################################################################
 #                   OpenWRT OpenVPN Server Management Script                  #
 #                                                                             #
-#  Version: v2.7.0                                                            #
+#  Version: v2.8.0                                                            #
 #  Repository: https://github.com/beadon/OpenWRTOpenVPNMgmt                   #
 #                                                                             #
 #  All-in-one OpenVPN server management for OpenWrt                           #
@@ -32,7 +32,7 @@ set -u
 #  - IPv6 support, firewall configuration, monitoring                         #
 ###############################################################################
 
-readonly SCRIPT_VERSION="v2.7.0"
+readonly SCRIPT_VERSION="v2.8.0"
 
 ################################################################################
 #                        USER CONFIGURATION SECTION                            #

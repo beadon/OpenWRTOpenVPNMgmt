@@ -604,10 +604,10 @@ CPU-limited router hardware.
 - [x] `show_crypto_summary()`: reusable summary printed at PKI init and configure_crypto
 - [x] PKI init prints algo summary on completion
 
-### Phase 4: Documentation — IN PROGRESS
-- [ ] Update README: explain EC vs RSA choice, compatibility note for pre-2.4 clients
-- [ ] Update README: note that `gen-dh` is skipped for EC (faster init)
-- [ ] Bump version to v2.8.0 on completion
+### Phase 4: Documentation — COMPLETED
+- [x] Update README: explain EC vs RSA choice, compatibility note for pre-2.4 clients
+- [x] Update README: note that `gen-dh` is skipped for EC (faster init)
+- [x] Bump version to v2.8.0 on completion
 
 ### Compatibility Note
 RSA 2048-bit is the minimum permitted — no option for smaller sizes.

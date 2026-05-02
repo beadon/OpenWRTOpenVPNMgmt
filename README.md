@@ -1,11 +1,19 @@
 # OpenWRT OpenVPN Server Management
 
-**Version: v2.7.0**
+**Version: v2.8.0**
 
 Openwrt VPN setup and management script, making management of Open VPN via CLI much simpler.
 
 The All-in-One OpenVPN Management Script
 Tired of managing keys, ovpn files and all different parts piecemeal? Use this script on the CLI to manage it all.
+
+## What's New in v2.8.0
+
+- **EC Cryptography Default** - PKI now uses Elliptic Curve (EC) keys with `prime256v1` (NIST P-256) by default; faster key generation on router hardware, no `gen-dh` step required
+- **RSA Compatibility Option** - Set `OVPN_CRYPTO_ALGO="rsa"` to use RSA 2048-bit keys for older clients (pre-OpenVPN 2.4, ~2017 and earlier)
+- **Crypto Configuration Menu** - New `k) Configure cryptography settings` menu option shows current algorithm, curve/key size, and allows switching before PKI init
+- **TLS Hardening** - `tls-version-min 1.2` and `data-ciphers AES-256-GCM` enforced in all generated server configs
+- **BusyBox Date Compatibility** - CRL expiry date parsing now uses BusyBox `date -D` strptime format first, with GNU `date -d` and macOS `date -j` as fallbacks
 
 ## What's New in v2.7.0
 
@@ -218,12 +226,25 @@ This installs `luci-app-openvpn` and `luci-app-filemanager` which provide:
 
 This will:
 - Initialize the PKI (Public Key Infrastructure)
-- Generate Diffie-Hellman parameters
 - Create the Certificate Authority (CA)
 - Generate server certificate and keys
 - Create TLS-Crypt key
+- Generate Diffie-Hellman parameters (RSA only — skipped for EC)
 
-**Important:** This step takes several minutes due to cryptographic key generation.
+#### EC vs RSA Cryptography
+
+The script defaults to **EC (Elliptic Curve)** with the `prime256v1` curve (NIST P-256). EC is recommended for all modern deployments:
+
+| | EC (default) | RSA |
+|---|---|---|
+| Key generation | Fast — no `gen-dh` step | Slower — DH parameter generation adds minutes |
+| Router hardware | Well-suited (low CPU) | Higher CPU cost |
+| Client compatibility | OpenVPN 2.4+ (2017+) | All OpenVPN versions |
+| Security | Strong — equivalent to RSA 3072+ | Strong at 2048-bit |
+
+To use RSA instead, edit the `OVPN_CRYPTO_ALGO` variable at the top of the script before running Step 3, or use Menu Option `k) Configure cryptography settings`. Once the PKI is initialized the algorithm cannot be changed without re-initializing (which revokes all existing certificates).
+
+**Important:** This step takes several minutes for RSA (DH generation). EC completes significantly faster.
 
 ### Step 4: Auto-Detect Server Settings
 

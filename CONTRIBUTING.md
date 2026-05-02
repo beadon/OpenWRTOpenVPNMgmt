@@ -91,6 +91,16 @@ refactor(menu): consolidate server control functions
 - Tested on OpenWRT (state which version)
 - No merge conflicts with `dev` branch
 
+## Mac Developer Setup
+
+Install the required tools via Homebrew before running any local checks:
+
+```bash
+brew install shellcheck
+```
+
+That is the only Mac-side build dependency. `sexpect` and `busybox` run on the OpenWrt device itself, not on your Mac.
+
 ## Testing
 
 CI runs ShellCheck only — it validates syntax and POSIX compliance on every push.
