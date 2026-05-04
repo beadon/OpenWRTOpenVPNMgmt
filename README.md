@@ -1,11 +1,18 @@
 # OpenWRT OpenVPN Server Management
 
-**Version: v2.9.0**
+**Version: v2.10.0**
 
 Openwrt VPN setup and management script, making management of Open VPN via CLI much simpler.
 
 The All-in-One OpenVPN Management Script
 Tired of managing keys, ovpn files and all different parts piecemeal? Use this script on the CLI to manage it all.
+
+## What's New in v2.10.0
+
+- **RFC 4193 IPv6 ULA Generation** - When enabling IPv6 (option 8), leave the subnet blank to auto-generate a random RFC 4193-compliant ULA prefix (`fdXX:XXXX:XXXX:1194::/64`) using `/dev/urandom`; subnet ID 1194 matches the default VPN port
+- **IPv6 Config Persistence** - IPv6 settings are persisted in `server.conf` as real OpenVPN directives (`server-ipv6`) plus structured comment hints (`# openvpn-mgmt: ipv6_mode=`, `ipv6_max_clients=`); settings survive script restarts without a separate config file
+- **ULA Conflict Detection** - Generated prefix is checked against the router's active LAN IPv6 prefix; retries up to 3 times if a collision is detected (statistically near-impossible but handled correctly)
+- **Numbered Test Output** - Integration test output now uses `suite.test` numbering (e.g. `PASS 14.3`) for easier navigation in logs
 
 ## What's New in v2.9.0
 
@@ -126,7 +133,7 @@ flowchart TB
     subgraph pools [Address Pools]
         subgraph vpn ["VPN Tunnel (tun0)"]
             V4["IPv4: 10.8.0.0/24<br/>Server: 10.8.0.1"]
-            V6["IPv6: fd42::/64<br/>(optional)"]
+            V6["IPv6: fdXX:XXXX:XXXX:1194::/64<br/>(RFC 4193 ULA, optional)"]
         end
 
         subgraph lan ["LAN (br-lan)"]
@@ -136,7 +143,7 @@ flowchart TB
 
     V4 --> C1["Client 1<br/>10.8.0.2"]
     V4 --> C2["Client 2<br/>10.8.0.3"]
-    V6 -.->|"if enabled"| C1v6["fd42::2"]
+    V6 -.->|"if enabled"| C1v6["fdXX:...::2"]
 
     vpn <-->|"Routed"| lan
 ```
@@ -300,13 +307,18 @@ Select IPv6 mode:
 
 Select mode (1-2): 1
 
-Enter IPv6 subnet: 2001:db8:1234:1194::/64
+Enter IPv6 subnet (leave blank to auto-generate RFC 4193 ULA):
+Generated RFC 4193 ULA prefix: fd3a:b7c1:9e24:1194::/64
 Enter max clients limit (default 253): 100
 ```
 
 **IPv6 Subnet Options:**
 - **Globally routable:** Use a /64 from your ISP's delegation (detected in Step 4)
-- **Private ULA:** Generate at https://unique-local-ipv6.com/
+- **Private ULA (auto-generated):** Leave the subnet blank — the script generates a random
+  RFC 4193-compliant prefix (`fdXX:XXXX:XXXX:1194::/64`) using `/dev/urandom`, checks it
+  against the router's LAN prefix to avoid collisions, and persists it in `server.conf`.
+  The subnet ID `1194` matches the default VPN port for easy identification.
+- **Private ULA (manual):** Enter any `fd00::/8` prefix in `/64` notation.
 
 ### Step 5.5: Configure Performance Settings (Optional)
 
@@ -1183,8 +1195,8 @@ This indicates your router's DHCPv6 server cannot allocate IPv6 addresses to LAN
 3. **Prefix delegation too small:**
    - If your ISP only gives a single /64, you cannot subdivide it for both LAN and VPN
    - **Solution for VPN:** Use a private ULA prefix (fd00::/8) for VPN instead
-   - Generate ULA at: https://unique-local-ipv6.com/
-   - Configure in script: Menu Option p → Option 3 (Toggle IPv6) → Enter ULA prefix
+   - Leave the subnet blank when enabling IPv6 (option 8) — a random RFC 4193 prefix is auto-generated
+   - Or enter a specific `fd00::/8` prefix in `/64` notation
 
 4. **DHCPv6 range exhausted:**
    ```bash
@@ -1418,18 +1430,18 @@ Use this if:
 - You only need IPv6 connectivity between VPN clients and LAN
 - You want private, non-routable IPv6 addresses
 
-**Generate ULA Prefix:**
-1. Visit: https://unique-local-ipv6.com/
-2. Generate a random ULA prefix (e.g., `fd42:4242:4242::/48`)
-3. Use a /64 subnet from it for VPN (e.g., `fd42:4242:4242:1194::/64`)
-
-**Script Configuration:**
-```bash
-OVPN_IPV6_ENABLE="yes"
-OVPN_IPV6_MODE="static"
-OVPN_IPV6_POOL="fd42:4242:4242:1194::/64"  # Private ULA
-OVPN_IPV6_POOL_SIZE="253"
+**Auto-generated ULA Prefix (recommended):**
+Enable IPv6 (option 8) and leave the subnet blank. The script generates a random
+RFC 4193-compliant prefix using `/dev/urandom`, checks for LAN conflicts, and
+persists it in `server.conf` as both a real OpenVPN directive and `# openvpn-mgmt:` hints:
 ```
+server-ipv6 fd3a:b7c1:9e24:1194::/64
+# openvpn-mgmt: ipv6_mode=static
+# openvpn-mgmt: ipv6_max_clients=253
+```
+
+**Manual ULA Prefix:**
+Enter any `fd00::/8` prefix in `/64` notation when prompted (e.g., `fd42:4242:4242:1194::/64`).
 
 **Limitation:** VPN clients can only access IPv6 resources on your LAN, not the internet.
 

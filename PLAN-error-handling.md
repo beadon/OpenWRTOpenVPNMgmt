@@ -641,7 +641,7 @@ RSA 2048-bit is the minimum permitted — no option for smaller sizes.
 Pre-OpenVPN 2.4 clients (~2017 and earlier) do not support EC certificates.
 For self-managed deployments with modern clients, EC is always the right choice.
 
-### IPv6 ULA Range + Config Persistence — PENDING
+### IPv6 ULA Range + Config Persistence — COMPLETE (v2.10.0)
 
 #### Problem
 The hardcoded default `OVPN_IPV6_POOL="fd42:4242:4242:1194::/64"` violates RFC 4193:
@@ -667,37 +667,29 @@ For static mode the comment is optional (inferred), but written for explicitness
 
 #### Implementation Plan
 
-**Phase 1 — RFC 4193-compliant prefix generation**
-- [ ] Add `generate_ula_prefix()` helper: reads 5 random bytes from `/dev/urandom`,
-      formats as `fdXX:XXXX:XXXX::/48` (standard site prefix length per RFC 4193 §3.2)
-- [ ] Call at server.conf generation time (option 5) when IPv6 is enabled and
-      `OVPN_IPV6_POOL` is still the factory default — never overwrite a user-customised value
-- [ ] Remove hardcoded `fd42:4242:4242:1194::/64` default; replace with empty string
-      sentinel that triggers generation on first use
-- [ ] Subnet for VPN pool: take the generated `/48` and assign `::1194::/64` as the
-      tunnel subnet (the VPN port number as the subnet ID — memorable, deterministic)
+**Phase 1 — RFC 4193-compliant prefix generation — COMPLETE**
+- [x] `generate_ula_prefix()`: reads 5 random bytes from `/dev/urandom` via `hexdump`,
+      formats as `fdXX:XXXX:XXXX:1194::/64` (subnet ID = VPN port, per RFC 4193 §3.2)
+- [x] `generate_ula_prefix_safe()`: retries up to 3 times with conflict check
+- [x] Called at option 5 (generate server.conf) when IPv6 enabled and pool is empty
+- [x] Hardcoded `fd42:4242:4242:1194::/64` removed; empty string sentinel triggers generation
 
-**Phase 2 — Read IPv6 config back from server.conf at startup**
-- [ ] Add `load_ipv6_config_from_conf()`: called after `server.conf` is confirmed to exist;
-      parses `server-ipv6`, `# openvpn-mgmt: ipv6_mode`, `# openvpn-mgmt: ipv6_max_clients`
-      and populates `OVPN_IPV6_POOL`, `OVPN_IPV6_MODE`, `OVPN_IPV6_POOL_SIZE`
-- [ ] Write `# openvpn-mgmt:` hints into server.conf at generation time (option 5)
-      and update them when option 8 (toggle IPv6) makes changes
-- [ ] Option 4 (auto-detect) already reads `server-ipv6` — ensure it sets
-      `OVPN_IPV6_POOL` consistently so the two paths agree
+**Phase 2 — Read IPv6 config back from server.conf at startup — COMPLETE**
+- [x] `load_ipv6_config_from_conf()`: parses `server-ipv6`, `# openvpn-mgmt: ipv6_mode`,
+      `# openvpn-mgmt: ipv6_max_clients`; populates `OVPN_IPV6_POOL`, `OVPN_IPV6_MODE`, `OVPN_IPV6_POOL_SIZE`
+- [x] `update_ipv6_hints_in_conf()`: sed-in-place update or append `# openvpn-mgmt:` comments
+- [x] Called after startup reset and after instance switch (option i)
 
-**Phase 3 — ULA conflict detection**
-- [ ] Extend existing `check_ipv6_subnet_conflict()` to also check the generated prefix
-      against the router's LAN IPv6 prefix (via `network_get_ipaddr6` or `ip -6 addr`)
-- [ ] Regenerate and retry (up to 3 times) if a collision is detected — extremely unlikely
-      with a random /48 but correct behaviour
+**Phase 3 — ULA conflict detection — COMPLETE**
+- [x] `generate_ula_prefix_safe()` checks generated prefix against router's LAN IPv6 prefix
+      via `ip -6 addr` and existing UCI interface addresses
+- [x] Regenerates and retries up to 3 times on collision
 
-**Phase 4 — Documentation + tests**
-- [ ] Update README IPv6 section: explain RFC 4193, show example generated prefix,
-      document the `# openvpn-mgmt:` comment format
-- [ ] Update Address Pool diagram to show the /48 → /64 subnet assignment
-- [ ] Add integration test assertions: generated prefix starts with `fd`, is not the
-      old placeholder, and appears correctly in server.conf
+**Phase 4 — Documentation + tests — COMPLETE**
+- [x] README IPv6 section updated: RFC 4193, example generated prefix,
+      `# openvpn-mgmt:` comment format, `logread -e openvpn-mgmt` reference
+- [x] Suite 14 (9 tests): prefix starts with `fd`, not old placeholder, server.conf hints present
+- [x] Test output numbered as `suite.test` (e.g. `PASS 14.1`) for easier log navigation
 
 #### Key constraints
 - `/dev/urandom` is always available on OpenWrt (in-kernel CSPRNG, no package needed)

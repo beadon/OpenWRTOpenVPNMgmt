@@ -35,16 +35,28 @@ FAIL=0
 # ── Test framework ────────────────────────────────────────────────────────────
 
 TEST_NAME=""
+SUITE_NUM=-1
+TEST_NUM=0
 ts() { date +%H:%M:%S; }
-it() { TEST_NAME="$1"; }
+
+suite() {
+    SUITE_NUM=$((SUITE_NUM + 1))
+    TEST_NUM=0
+    printf "\n--- [%s] Suite %d: %s ---\n" "$(ts)" "$SUITE_NUM" "$1"
+}
+
+it() {
+    TEST_NUM=$((TEST_NUM + 1))
+    TEST_NAME="$1"
+}
 
 pass() {
-    printf "  [%s] PASS: %s\n" "$(ts)" "$TEST_NAME"
+    printf "  [%s] PASS %d.%d: %s\n" "$(ts)" "$SUITE_NUM" "$TEST_NUM" "$TEST_NAME"
     PASS=$((PASS + 1))
 }
 
 fail() {
-    printf "  [%s] FAIL: %s — %s\n" "$(ts)" "$TEST_NAME" "$1" >&2
+    printf "  [%s] FAIL %d.%d: %s — %s\n" "$(ts)" "$SUITE_NUM" "$TEST_NUM" "$TEST_NAME" "$1" >&2
     FAIL=$((FAIL + 1))
 }
 
@@ -82,7 +94,7 @@ spawn_script
 
 # ── Suite 0: Package Installation (option 1) ─────────────────────────────────
 
-printf "--- [%s] Suite 0: Package Installation (%s) ---\n" "$(ts)" "$TEST_PKG_MGR"
+suite "Package Installation ($TEST_PKG_MGR)"
 
 it "package manager detected ($TEST_PKG_MGR)"
 if [ "$TEST_PKG_MGR" = "apk" ] || [ "$TEST_PKG_MGR" = "opkg" ]; then
@@ -116,7 +128,7 @@ require_suite  # suites 1–4 depend on packages being installed
 
 # ── Suite 1: PKI Initialization (EC / prime256v1) ────────────────────────────
 
-printf "--- [%s] Suite 1: PKI Initialization ---\n" "$(ts)"
+suite "PKI Initialization"
 
 it "option 3 completes PKI init"
 select_option "3"
@@ -162,7 +174,7 @@ fi
 
 # ── Suite 2: Server Config Generation (option 5) ─────────────────────────────
 
-printf "\n--- [%s] Suite 2: Server Config Generation ---\n" "$(ts)"
+suite "Server Config Generation"
 
 it "option 5 generates server.conf"
 select_option "5"
@@ -189,7 +201,7 @@ check assert_file_contains "$OVPN_CONF" "tls-crypt-v2"
 
 # ── Suite 3: Client Certificate Creation (option 12) ─────────────────────────
 
-printf "\n--- [%s] Suite 3: Client Certificate Creation ---\n" "$(ts)"
+suite "Client Certificate Creation"
 
 it "option 12 creates client certificate"
 select_option "12"
@@ -223,7 +235,7 @@ check assert_file_contains "$OVPN_PROFILE" "<tls-crypt-v2>"
 
 # ── Suite 4: CRL — Revoke + Auto-renewal ─────────────────────────────────────
 
-printf "\n--- [%s] Suite 4: CRL Revocation and Auto-renewal ---\n" "$(ts)"
+suite "CRL Revocation and Auto-renewal"
 
 it "option 14 revokes client"
 select_option "14"
@@ -270,7 +282,7 @@ check wait_for "Select an option:" 5
 # Runs after Suite 3 (client cert exists) and Suite 4 (client revoked).
 # server cert is still present; revoked client has moved to pki/revoked/.
 
-printf "\n--- [%s] Suite 5: Certificate Inspection + Bulk .ovpn ---\n" "$(ts)"
+suite "Certificate Inspection + Bulk .ovpn"
 
 it "option 13 lists clients"
 select_option "13"
@@ -335,7 +347,7 @@ check assert_file_contains "$OVPN_DIR/$TEST_CLIENT2.ovpn" "<tls-crypt-v2>"
 
 # ── Suite 6: Complete CRL Coverage ───────────────────────────────────────────
 
-printf "\n--- [%s] Suite 6: Complete CRL Coverage ---\n" "$(ts)"
+suite "Complete CRL Coverage"
 
 it "CRL renew (r → 2)"
 select_option "r"
@@ -365,7 +377,7 @@ fi
 
 # ── Suite 7: File Permission Check and Fix ────────────────────────────────────
 
-printf "\n--- [%s] Suite 7: File Permission Check and Fix ---\n" "$(ts)"
+suite "File Permission Check and Fix"
 
 it "option 22 reports all permissions OK (clean state)"
 select_option "22"
@@ -397,7 +409,7 @@ check assert_file_perms "$OVPN_PKI/private/$TEST_CLIENT2.key" "600"
 # network and firewall restarts to avoid dropping the SSH management session.
 # Assertions are against UCI state, which is persisted before any restart.
 
-printf "\n--- [%s] Suite 8: Firewall Check and Configure ---\n" "$(ts)"
+suite "Firewall Check and Configure"
 
 it "option 10 runs firewall check"
 select_option "10"
@@ -444,7 +456,7 @@ fi
 # Starting OpenVPN only creates tun0 — it does not touch br-lan or the SSH
 # management interface, so the session is safe throughout.
 
-printf "\n--- [%s] Suite 9: Server Start and Stop ---\n" "$(ts)"
+suite "Server Start and Stop"
 
 it "option s → 1 starts OpenVPN server"
 select_option "s"
@@ -504,7 +516,7 @@ check wait_for "Select an option:" 5
 # RSA 4096, and Cancel. Settings are in-memory only — PKI is not re-initialised.
 # Each sub-case ends with "Press Enter to continue" from the case handler.
 
-printf "\n--- [%s] Suite 10: Crypto Config Menu (option 2) ---\n" "$(ts)"
+suite "Crypto Config Menu (option 2)"
 
 it "option 2 → 1 → 1 sets EC prime256v1"
 select_option "2"
@@ -562,7 +574,7 @@ check wait_for "Select an option:" 5
 # option i → c — cancel, no change
 # option i → n — create new instance, verify UCI, then switch back to 'server'
 
-printf "\n--- [%s] Suite 11: Instance Management (options i, l) ---\n" "$(ts)"
+suite "Instance Management (options i, l)"
 
 it "option l lists instances"
 select_option "l"
@@ -612,7 +624,7 @@ check wait_for "Select an option:" 5
 # WAN IP from UCI, and prints "Final Settings". No user prompts — returns
 # directly to the main menu after output.
 
-printf "\n--- [%s] Suite 12: Auto-detect Server Settings (option 4) ---\n" "$(ts)"
+suite "Auto-detect Server Settings (option 4)"
 
 it "option 4 detects settings from server.conf and prints final summary"
 select_option "4"
@@ -634,7 +646,7 @@ check wait_for "Select an option:" 20
 # option 9 — configure performance: cancel, then set bandwidth limit
 # option 7 has no Press Enter gate — returns directly to menu.
 
-printf "\n--- [%s] Suite 13: Config Mutations (options 7, 8, 9) ---\n" "$(ts)"
+suite "Config Mutations (options 7, 8, 9)"
 
 it "option 7 restores server.conf from backup (no restart)"
 select_option "7"
@@ -648,9 +660,7 @@ check assert_file_exists "$OVPN_CONF"
 
 it "option 8 shows IPv6 status and cancels when answered 'no'"
 select_option "8"
-wait_for "IPv6 Configuration" 5
-wait_for "currently DISABLED\|currently ENABLED" 5
-expect_send "Enable IPv6\|Select option" "no" 5
+expect_send "Enable IPv6 support\|Select option" "no" 5
 expect_send "Press Enter" "" 5
 check wait_for "Select an option:" 5
 
@@ -668,6 +678,81 @@ expect_send "Enter bandwidth limit"  "1000000" 5
 wait_for "Bandwidth limit set to" 5
 expect_send "Press Enter" "" 5
 check wait_for "Select an option:" 5
+
+# ── Suite 14: IPv6 ULA prefix generation ─────────────────────────────────────
+# Enable IPv6, regenerate server.conf, verify a RFC 4193-compliant prefix was
+# generated (starts with "fd", is not the old placeholder, appears in the file).
+
+suite "IPv6 ULA prefix generation"
+require_suite 1 14
+
+# Ensure we're on the 'server' instance — Suite 11 may have left us on another.
+# Find the line number of 'server' in the UCI instance list and send it.
+it "switch to server instance for Suite 14"
+SERVER_NUM=$(uci show openvpn 2>/dev/null | grep "=openvpn$" | cut -d'.' -f2 | cut -d'=' -f1 | grep -n "^server$" | cut -d: -f1)
+select_option "i"
+expect_send "Select option" "${SERVER_NUM:-1}" 5
+wait_for "Selected instance\|CURRENT"          5
+expect_send "Press Enter" ""                   5
+check wait_for "Select an option:"             5
+
+# toggle_ipv6 (disabled path) prompts:
+#   "Enable IPv6 support? (yes/no): "   → yes
+#   "Select mode (1-2): "               → 1 (static)
+#   "Enter IPv6 subnet (or press Enter to keep current): " → Enter
+#   "Enter max clients limit (default 253): "              → Enter
+#   then prints "IPv6 support enabled" and returns to menu — no Press Enter gate
+it "option 8 enables IPv6"
+select_option "8"
+expect_send "Enable IPv6 support" "yes"  5
+expect_send "Select mode"         "1"    5
+expect_send "Enter IPv6 subnet"   ""     5
+expect_send "Enter max clients"   ""     5
+wait_for "IPv6 support enabled"          5
+expect_send "Press Enter" ""             5
+check wait_for "Select an option:"       5
+
+# generate_server_conf with IPv6 enabled (empty pool) prompts:
+#   "Continue and overwrite? (yes/no): " (existing conf present)
+#   "Generating RFC 4193-compliant ULA prefix..." → "Generated: fd..."
+#   "View the generated configuration? (y/n): "  → n
+#   "Restart OpenVPN...? (y/n): "                → n
+# No IPv6 leak warning (that only shows when IPv6 is disabled)
+it "option 5 regenerates server.conf with IPv6 enabled"
+select_option "5"
+expect_send "overwrite"   "yes" 5
+wait_for    "Generated:"        5
+expect_send "View"        "n"   5
+expect_send "Restart"     "n"   5
+check wait_for "Select an option:" 5
+
+it "server.conf contains server-ipv6 directive"
+check assert_file_contains "$OVPN_CONF" "server-ipv6"
+
+it "generated prefix starts with fd (RFC 4193 ULA)"
+check sh -c "grep '^server-ipv6 ' $OVPN_CONF | grep -q '^server-ipv6 fd'"
+
+it "generated prefix is not the old hardcoded placeholder"
+check sh -c "! grep -q 'fd42:4242:4242' $OVPN_CONF"
+
+it "server.conf contains openvpn-mgmt ipv6_mode hint"
+check assert_file_contains "$OVPN_CONF" "openvpn-mgmt: ipv6_mode="
+
+it "server.conf contains openvpn-mgmt ipv6_max_clients hint"
+check assert_file_contains "$OVPN_CONF" "openvpn-mgmt: ipv6_max_clients="
+
+# toggle_ipv6 (enabled path) to disable:
+#   "Select option (1-5): "       → 4 (Disable IPv6)
+#   "Disable IPv6 support? (yes/no): " → yes
+#   prints "IPv6 support disabled" and returns to menu — no Press Enter gate
+it "option 8 disables IPv6 (restore clean state for SSH test)"
+select_option "8"
+wait_for    "IPv6 is currently ENABLED"  5
+expect_send "Select option"        "4"   5
+expect_send "Disable IPv6 support" "yes" 5
+wait_for "IPv6 support disabled"         5
+expect_send "Press Enter" ""             5
+check wait_for "Select an option:"       5
 
 # ── Done ──────────────────────────────────────────────────────────────────────
 

@@ -23,7 +23,7 @@ set -u
 ###############################################################################
 #                   OpenWRT OpenVPN Server Management Script                  #
 #                                                                             #
-#  Version: v2.9.0                                                            #
+#  Version: v2.10.0                                                           #
 #  Repository: https://github.com/beadon/OpenWRTOpenVPNMgmt                   #
 #                                                                             #
 #  All-in-one OpenVPN server management for OpenWrt                           #
@@ -32,7 +32,7 @@ set -u
 #  - IPv6 support, firewall configuration, monitoring                         #
 ###############################################################################
 
-readonly SCRIPT_VERSION="v2.9.0"
+readonly SCRIPT_VERSION="v2.10.0"
 
 ################################################################################
 #                        USER CONFIGURATION SECTION                            #
@@ -51,7 +51,7 @@ OVPN_POOL="10.8.0.0 255.255.255.0"       # VPN IPv4 subnet and netmask
 # IPv6 Configuration
 OVPN_IPV6_ENABLE="no"                    # Enable IPv6: yes or no
 OVPN_IPV6_MODE="static"                  # Mode: "static" (simple) or "dhcpv6" (advanced)
-OVPN_IPV6_POOL="fd42:4242:4242:1194::/64"  # IPv6 VPN subnet (ULA or global)
+OVPN_IPV6_POOL=""                            # IPv6 VPN subnet — generated at first use (RFC 4193)
 OVPN_IPV6_POOL_SIZE="253"                # Max IPv6 clients (for tracking)
 
 # Directory Paths
@@ -94,8 +94,8 @@ export EASYRSA_BATCH="1"
 OVPN_DNS="${OVPN_POOL%.* *}.1"
 OVPN_DOMAIN=$(uci get dhcp.@dnsmasq[0].domain 2>/dev/null || echo "lan")
 
-# Auto-detect IPv6 DNS (first address in IPv6 pool)
-OVPN_IPV6_DNS="${OVPN_IPV6_POOL%::*}::1"
+# IPv6 DNS derived from pool — set after pool is known (see load_ipv6_config_from_conf)
+OVPN_IPV6_DNS=""
 
 # Performance configuration for CPU-limited devices
 # Note: Compression is NOT configured due to OpenVPN deprecation and stability issues
@@ -527,6 +527,7 @@ select_openvpn_instance() {
             if [ -n "$selected_instance" ]; then
                 OVPN_INSTANCE="$selected_instance"
                 update_instance_paths
+                load_ipv6_config_from_conf
                 log_action "instance switched (instance=${OVPN_INSTANCE})"
                 echo ""
                 echo "Selected instance: $OVPN_INSTANCE"
@@ -638,6 +639,85 @@ check_dhcpv6_prerequisites() {
         echo "Prerequisites: FAILED (install/start odhcpd first)"
         return 1
     fi
+}
+
+# Generate an RFC 4193-compliant ULA /64 prefix.
+# Format: fd<XX>:<XXXX>:<XXXX>:1194::/64
+#   - fd = FC00::/7 ULA, L=1 (locally assigned)
+#   - 5 random bytes as the 40-bit global ID (per RFC 4193 §3.2)
+#   - 1194 as the 16-bit subnet ID (matches the default VPN port — memorable, deterministic)
+# Returns the prefix string on stdout; exits non-zero if /dev/urandom or hexdump unavailable.
+# Generate a single RFC 4193 ULA /64 candidate (no conflict check).
+generate_ula_prefix() {
+    local raw
+    raw=$(dd if=/dev/urandom bs=5 count=1 2>/dev/null | hexdump -v -e '1/1 "%02x"') || return 1
+    [ "${#raw}" -lt 10 ] && return 1
+    printf 'fd%s:%s:%s:1194::/64\n' \
+        "$(printf '%s' "$raw" | cut -c1-2)" \
+        "$(printf '%s' "$raw" | cut -c3-6)" \
+        "$(printf '%s' "$raw" | cut -c7-10)"
+}
+
+# Generate a ULA prefix that doesn't conflict with the router's LAN IPv6.
+# Retries up to 3 times; a collision with a random /48 is astronomically unlikely
+# but correct behaviour per the design.
+generate_ula_prefix_safe() {
+    local attempt=0
+    local prefix
+    while [ $attempt -lt 3 ]; do
+        prefix=$(generate_ula_prefix) || return 1
+        if check_ipv6_subnet_conflict "$prefix" 2>/dev/null; then
+            printf '%s\n' "$prefix"
+            return 0
+        fi
+        attempt=$((attempt + 1))
+        echo "  Generated prefix $prefix conflicts with LAN — retrying..." >&2
+    done
+    echo "ERROR: Could not generate a non-conflicting ULA prefix after 3 attempts" >&2
+    return 1
+}
+
+# Update (or append) # openvpn-mgmt: hint comments in server.conf.
+# Called after toggle_ipv6 mutates IPv6 settings so they persist across restarts.
+update_ipv6_hints_in_conf() {
+    local conf="${1:-$OVPN_SERVER_CONF}"
+    [ -f "$conf" ] || return 0
+
+    if grep -q '^# openvpn-mgmt: ipv6_mode=' "$conf" 2>/dev/null; then
+        sed -i "s|^# openvpn-mgmt: ipv6_mode=.*|# openvpn-mgmt: ipv6_mode=${OVPN_IPV6_MODE}|" "$conf"
+    else
+        printf '\n# openvpn-mgmt: ipv6_mode=%s\n' "$OVPN_IPV6_MODE" >> "$conf"
+    fi
+
+    if grep -q '^# openvpn-mgmt: ipv6_max_clients=' "$conf" 2>/dev/null; then
+        sed -i "s|^# openvpn-mgmt: ipv6_max_clients=.*|# openvpn-mgmt: ipv6_max_clients=${OVPN_IPV6_POOL_SIZE}|" "$conf"
+    else
+        printf '# openvpn-mgmt: ipv6_max_clients=%s\n' "$OVPN_IPV6_POOL_SIZE" >> "$conf"
+    fi
+}
+
+# Read IPv6 settings back from an existing server.conf.
+# Populates OVPN_IPV6_POOL, OVPN_IPV6_DNS, OVPN_IPV6_MODE, OVPN_IPV6_POOL_SIZE,
+# and OVPN_IPV6_ENABLE from real directives and # openvpn-mgmt: hint comments.
+# Safe to call even when server.conf does not yet exist.
+load_ipv6_config_from_conf() {
+    local conf="${1:-$OVPN_SERVER_CONF}"
+    [ -f "$conf" ] || return 0
+
+    # Real directive: server-ipv6 <prefix>
+    local pool; pool=$(grep -m1 '^server-ipv6 ' "$conf" 2>/dev/null | awk '{print $2}')
+    if [ -n "$pool" ]; then
+        OVPN_IPV6_POOL="$pool"
+        OVPN_IPV6_DNS="${OVPN_IPV6_POOL%::*}::1"
+        OVPN_IPV6_ENABLE="yes"
+    fi
+
+    # Hint comments written by this script
+    local mode; mode=$(grep -m1 '^# openvpn-mgmt: ipv6_mode=' "$conf" 2>/dev/null | sed 's/.*ipv6_mode=//')
+    [ -n "$mode" ] && OVPN_IPV6_MODE="$mode"
+
+    local max; max=$(grep -m1 '^# openvpn-mgmt: ipv6_max_clients=' "$conf" 2>/dev/null | sed 's/.*ipv6_max_clients=//')
+    [ -n "$max" ] && OVPN_IPV6_POOL_SIZE="$max"
 }
 
 # Function to check if IPv6 subnet conflicts with LAN
@@ -1527,13 +1607,17 @@ generate_server_conf() {
     echo ""
     echo "IPv6 Settings:"
     if [ "$OVPN_IPV6_ENABLE" = "yes" ]; then
-        OVPN_IPV6_SERVER="${OVPN_IPV6_POOL%::*}::1"
-        OVPN_IPV6_CLIENT="${OVPN_IPV6_POOL%::*}::2"
         echo "  Status: ENABLED - IPv6 will be configured"
-        echo "  VPN Subnet: $OVPN_IPV6_POOL"
-        echo "  Server Address: $OVPN_IPV6_SERVER"
-        echo "  Client Address: $OVPN_IPV6_CLIENT"
-        echo "  DNS Server: $OVPN_IPV6_DNS"
+        if [ -n "$OVPN_IPV6_POOL" ]; then
+            OVPN_IPV6_SERVER="${OVPN_IPV6_POOL%::*}::1"
+            OVPN_IPV6_CLIENT="${OVPN_IPV6_POOL%::*}::2"
+            echo "  VPN Subnet: $OVPN_IPV6_POOL"
+            echo "  Server Address: $OVPN_IPV6_SERVER"
+            echo "  Client Address: $OVPN_IPV6_CLIENT"
+            echo "  DNS Server: ${OVPN_IPV6_POOL%::*}::1"
+        else
+            echo "  VPN Subnet: (RFC 4193 ULA prefix will be generated)"
+        fi
         echo "  Routes: All IPv6 traffic (2000::/3) via VPN"
     else
         echo "  Status: DISABLED - IPv6 will NOT be configured"
@@ -1636,6 +1720,17 @@ EOF
 
     # Add IPv6 configuration if enabled
     if [ "$OVPN_IPV6_ENABLE" = "yes" ]; then
+        # Generate a compliant ULA prefix if none has been set yet
+        if [ -z "$OVPN_IPV6_POOL" ]; then
+            echo "Generating RFC 4193-compliant ULA prefix..."
+            OVPN_IPV6_POOL=$(generate_ula_prefix_safe) || {
+                echo "ERROR: Failed to generate ULA prefix — check /dev/urandom" >&2
+                return 1
+            }
+            echo "  Generated: $OVPN_IPV6_POOL"
+        fi
+        OVPN_IPV6_DNS="${OVPN_IPV6_POOL%::*}::1"
+
         # Warn if DHCPv6 mode is selected (not fully automated yet)
         if [ "$OVPN_IPV6_MODE" = "dhcpv6" ]; then
             echo ""
@@ -1743,6 +1838,15 @@ EOF
 # Certificate Revocation List (uncomment after first revocation)
 # crl-verify ${OVPN_PKI}/crl.pem
 EOF
+
+    # Write openvpn-mgmt hint comments so settings survive a script restart
+    if [ "$OVPN_IPV6_ENABLE" = "yes" ]; then
+        cat << EOF >> ${OVPN_SERVER_CONF}
+
+# openvpn-mgmt: ipv6_mode=${OVPN_IPV6_MODE}
+# openvpn-mgmt: ipv6_max_clients=${OVPN_IPV6_POOL_SIZE}
+EOF
+    fi
     
     echo ""
     echo "Server configuration created: $OVPN_SERVER_CONF"
@@ -2912,6 +3016,7 @@ toggle_ipv6() {
                 read -p "Enter mode (static/dhcpv6): " new_mode
                 if [ "$new_mode" = "static" ]; then
                     OVPN_IPV6_MODE="$new_mode"
+                    update_ipv6_hints_in_conf
                     echo "Mode changed to: $OVPN_IPV6_MODE"
                     echo "Note: Regenerate server.conf (option 1) to apply changes"
                 elif [ "$new_mode" = "dhcpv6" ]; then
@@ -2925,6 +3030,7 @@ toggle_ipv6() {
                         read -p "Continue with DHCPv6 mode anyway? (yes/no): " confirm_dhcpv6
                         if [ "$confirm_dhcpv6" = "yes" ]; then
                             OVPN_IPV6_MODE="dhcpv6"
+                            update_ipv6_hints_in_conf
                             echo "Mode changed to: $OVPN_IPV6_MODE"
                             echo "Note: You MUST configure odhcpd manually before this will work"
                             echo "Note: Regenerate server.conf (option 1) to apply changes"
@@ -2951,6 +3057,7 @@ toggle_ipv6() {
                     if check_ipv6_subnet_conflict "$new_ipv6_pool"; then
                         OVPN_IPV6_POOL="$new_ipv6_pool"
                         OVPN_IPV6_DNS="${OVPN_IPV6_POOL%::*}::1"
+                        update_ipv6_hints_in_conf
                         echo "IPv6 subnet changed to: $OVPN_IPV6_POOL"
                         echo "Note: Regenerate server.conf (option 1) to apply changes"
                     else
@@ -2964,6 +3071,7 @@ toggle_ipv6() {
                 read -p "Enter new max clients limit: " new_size
                 if [ -n "$new_size" ] && [ "$new_size" -gt 0 ] 2>/dev/null; then
                     OVPN_IPV6_POOL_SIZE="$new_size"
+                    update_ipv6_hints_in_conf
                     echo "Max clients limit changed to: $OVPN_IPV6_POOL_SIZE"
                 else
                     echo "Invalid number. No changes made."
@@ -2979,6 +3087,7 @@ toggle_ipv6() {
                 read -p "Disable IPv6 support? (yes/no): " confirm
                 if [ "$confirm" = "yes" ]; then
                     OVPN_IPV6_ENABLE="no"
+                    update_ipv6_hints_in_conf
                     log_action "IPv6 disabled (instance=${OVPN_INSTANCE})"
                     echo ""
                     echo "IPv6 support disabled"
@@ -3081,6 +3190,7 @@ toggle_ipv6() {
             fi
 
             OVPN_IPV6_ENABLE="yes"
+            update_ipv6_hints_in_conf
             log_action "IPv6 enabled (mode=${OVPN_IPV6_MODE} subnet=${OVPN_IPV6_POOL} instance=${OVPN_INSTANCE})"
             echo ""
             echo "IPv6 support enabled"
@@ -4097,6 +4207,9 @@ printf '%d\n' "$$" > "$OVPN_MGMT_PID"
 
 # Clear terminal at startup for clean display
 reset
+
+# Load IPv6 settings from existing server.conf (if present)
+load_ipv6_config_from_conf
 
 # Warn on startup if CRL is expired or expiring within 30 days
 if [ -f "${OVPN_PKI}/crl.pem" ]; then
