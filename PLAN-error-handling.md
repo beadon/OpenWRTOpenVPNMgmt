@@ -641,20 +641,69 @@ RSA 2048-bit is the minimum permitted — no option for smaller sizes.
 Pre-OpenVPN 2.4 clients (~2017 and earlier) do not support EC certificates.
 For self-managed deployments with modern clients, EC is always the right choice.
 
-### IPv6 ULA Range Review (Pending Testing)
-Issues identified during testing with IPv6 configuration:
-- Review and modify ULA (Unique Local Address) ranges
-- Current default: `fd42:4242:4242:1194::/64`
-- Verify ULA range selection follows RFC 4193 recommendations
-- Test interaction between VPN IPv6 pool and router's existing IPv6 configuration
-- Update documentation and diagrams to reflect correct ULA usage
-- Consider auto-detection of suitable ULA ranges that don't conflict with existing network
+### IPv6 ULA Range + Config Persistence — PENDING
 
-Areas to review:
-- Script defaults in `OVPN_IPV6_POOL`
-- README IPv6 section examples
-- Address Pool diagram
-- Static vs DHCPv6 mode behavior with ULA
+#### Problem
+The hardcoded default `OVPN_IPV6_POOL="fd42:4242:4242:1194::/64"` violates RFC 4193:
+the 40-bit global ID must be pseudo-randomly generated per-site to avoid collisions
+between networks. The current value is a recognisable placeholder, not a random prefix.
+
+Additionally, IPv6 settings (pool, mode, max clients) are only held in memory — they
+reset to script defaults on every run, so any customisation made via option 8 is lost.
+
+#### Design Decision
+Use `server.conf` as the source of truth wherever possible:
+- **Real OpenVPN directives** are the primary store: `server-ipv6`, `push "route-ipv6"`,
+  `push "dhcp-option DNS6"` — option 4 (auto-detect) already reads these back.
+- **Structured comments** (`# openvpn-mgmt: key=value`) only for the two values that
+  have no OpenVPN directive equivalent: `ipv6_mode` and `ipv6_max_clients`.
+  OpenVPN ignores these lines; the script greps them on startup.
+- No separate config file — `server.conf` is self-contained and human-readable.
+
+#### IPv6 mode inference rule
+If `server-ipv6` is present and no DHCPv6 directives are present → infer `static`.
+The `# openvpn-mgmt: ipv6_mode=dhcpv6` comment is only needed if mode is `dhcpv6`.
+For static mode the comment is optional (inferred), but written for explicitness.
+
+#### Implementation Plan
+
+**Phase 1 — RFC 4193-compliant prefix generation**
+- [ ] Add `generate_ula_prefix()` helper: reads 5 random bytes from `/dev/urandom`,
+      formats as `fdXX:XXXX:XXXX::/48` (standard site prefix length per RFC 4193 §3.2)
+- [ ] Call at server.conf generation time (option 5) when IPv6 is enabled and
+      `OVPN_IPV6_POOL` is still the factory default — never overwrite a user-customised value
+- [ ] Remove hardcoded `fd42:4242:4242:1194::/64` default; replace with empty string
+      sentinel that triggers generation on first use
+- [ ] Subnet for VPN pool: take the generated `/48` and assign `::1194::/64` as the
+      tunnel subnet (the VPN port number as the subnet ID — memorable, deterministic)
+
+**Phase 2 — Read IPv6 config back from server.conf at startup**
+- [ ] Add `load_ipv6_config_from_conf()`: called after `server.conf` is confirmed to exist;
+      parses `server-ipv6`, `# openvpn-mgmt: ipv6_mode`, `# openvpn-mgmt: ipv6_max_clients`
+      and populates `OVPN_IPV6_POOL`, `OVPN_IPV6_MODE`, `OVPN_IPV6_POOL_SIZE`
+- [ ] Write `# openvpn-mgmt:` hints into server.conf at generation time (option 5)
+      and update them when option 8 (toggle IPv6) makes changes
+- [ ] Option 4 (auto-detect) already reads `server-ipv6` — ensure it sets
+      `OVPN_IPV6_POOL` consistently so the two paths agree
+
+**Phase 3 — ULA conflict detection**
+- [ ] Extend existing `check_ipv6_subnet_conflict()` to also check the generated prefix
+      against the router's LAN IPv6 prefix (via `network_get_ipaddr6` or `ip -6 addr`)
+- [ ] Regenerate and retry (up to 3 times) if a collision is detected — extremely unlikely
+      with a random /48 but correct behaviour
+
+**Phase 4 — Documentation + tests**
+- [ ] Update README IPv6 section: explain RFC 4193, show example generated prefix,
+      document the `# openvpn-mgmt:` comment format
+- [ ] Update Address Pool diagram to show the /48 → /64 subnet assignment
+- [ ] Add integration test assertions: generated prefix starts with `fd`, is not the
+      old placeholder, and appears correctly in server.conf
+
+#### Key constraints
+- `/dev/urandom` is always available on OpenWrt (in-kernel CSPRNG, no package needed)
+- `printf` / `awk` for hex formatting — no `bc` or Python
+- Must not overwrite a prefix the user explicitly set via option 8
+- `# openvpn-mgmt:` comments must survive a restore-from-backup (option 7) unchanged
 
 ### Docker Test Environment (Future)
 Current limitation: Using `openwrt/rootfs:x86-64-23.05.5` for testing.
