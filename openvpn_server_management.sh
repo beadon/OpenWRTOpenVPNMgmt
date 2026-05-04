@@ -23,7 +23,7 @@ set -u
 ###############################################################################
 #                   OpenWRT OpenVPN Server Management Script                  #
 #                                                                             #
-#  Version: v2.8.0                                                            #
+#  Version: v2.9.0                                                            #
 #  Repository: https://github.com/beadon/OpenWRTOpenVPNMgmt                   #
 #                                                                             #
 #  All-in-one OpenVPN server management for OpenWrt                           #
@@ -32,7 +32,7 @@ set -u
 #  - IPv6 support, firewall configuration, monitoring                         #
 ###############################################################################
 
-readonly SCRIPT_VERSION="v2.8.0"
+readonly SCRIPT_VERSION="v2.9.0"
 
 ################################################################################
 #                        USER CONFIGURATION SECTION                            #
@@ -58,6 +58,7 @@ OVPN_IPV6_POOL_SIZE="253"                # Max IPv6 clients (for tracking)
 OVPN_PKI="/etc/easy-rsa/pki"             # PKI directory for certificates
 OVPN_DIR="/root/ovpn_config_out"         # Output directory for client configs
 OVPN_CRL_LOG="/tmp/openvpn-crl-renewal.log"  # CRL auto-renewal log (volatile, lost on reboot)
+OVPN_MGMT_PID="/var/run/openvpn_mgmt.pid"   # PID file — prevents duplicate sessions
 
 # Cryptography Settings
 # OVPN_CRYPTO_ALGO: "ec" (recommended, faster on router hardware, requires OpenVPN 2.4+)
@@ -115,12 +116,13 @@ update_instance_paths() {
 # Temp file tracking for cleanup
 TEMP_FILES=""
 
-# Cleanup handler - removes registered temp files on exit
+# Cleanup handler - removes registered temp files and PID file on exit
 cleanup() {
     local file
     for file in $TEMP_FILES; do
         rm -f "$file" 2>/dev/null
     done
+    rm -f "$OVPN_MGMT_PID" 2>/dev/null
 }
 
 # Register cleanup trap for exit and common signals.
@@ -160,6 +162,10 @@ run_cmd() {
         echo "ERROR: Failed to $desc" >&2
         return 1
     fi
+}
+
+log_action() {
+    logger -t "openvpn-mgmt" "$*"
 }
 
 ################################################################################
@@ -521,6 +527,7 @@ select_openvpn_instance() {
             if [ -n "$selected_instance" ]; then
                 OVPN_INSTANCE="$selected_instance"
                 update_instance_paths
+                log_action "instance switched (instance=${OVPN_INSTANCE})"
                 echo ""
                 echo "Selected instance: $OVPN_INSTANCE"
             else
@@ -543,6 +550,7 @@ select_openvpn_instance() {
                 OVPN_INSTANCE="$new_instance"
                 ensure_uci_instance "$OVPN_INSTANCE"
                 update_instance_paths
+                log_action "instance created (instance=${OVPN_INSTANCE})"
                 echo ""
                 echo "Created and selected instance: $OVPN_INSTANCE"
             else
@@ -1137,6 +1145,7 @@ configure_vpn_firewall() {
         return 1
     fi
 
+    log_action "firewall configured (instance=${OVPN_INSTANCE})"
     echo ""
     echo "Firewall configuration updated"
     echo ""
@@ -1747,6 +1756,7 @@ EOF
     if ! run_cmd "commit OpenVPN UCI configuration" uci commit openvpn; then
         return 1
     fi
+    log_action "server.conf generated (instance=${OVPN_INSTANCE})"
     echo "UCI instance '$OVPN_INSTANCE' updated"
     echo ""
 
@@ -1815,6 +1825,7 @@ restore_server_conf() {
         return 1
     fi
 
+    log_action "server.conf restored from backup (instance=${OVPN_INSTANCE})"
     echo "Configuration restored from backup"
     echo ""
     
@@ -2211,6 +2222,7 @@ renew_certificate() {
     fi
 
     echo ""
+    log_action "certificate renewed (client=${cert_name} instance=${OVPN_INSTANCE})"
     echo "Certificate renewed successfully!"
     echo "Note: You will need to regenerate the .ovpn config file for this client."
     echo ""
@@ -2404,6 +2416,7 @@ create_client() {
         return 1
     fi
 
+    log_action "client created (client=${NEW_CLIENT} instance=${OVPN_INSTANCE})"
     echo ""
     read -p "Generate .ovpn config file? (y/n): " gen_ovpn
     if [ "$gen_ovpn" = "y" ] || [ "$gen_ovpn" = "Y" ]; then
@@ -2479,6 +2492,7 @@ revoke_client() {
             fi
 
             echo ""
+            log_action "client revoked (client=${CLIENT_TO_REVOKE} instance=${OVPN_INSTANCE})"
             echo "Certificate revoked successfully."
             echo "CRL updated at: ${OVPN_PKI}/crl.pem"
             echo ""
@@ -2965,6 +2979,7 @@ toggle_ipv6() {
                 read -p "Disable IPv6 support? (yes/no): " confirm
                 if [ "$confirm" = "yes" ]; then
                     OVPN_IPV6_ENABLE="no"
+                    log_action "IPv6 disabled (instance=${OVPN_INSTANCE})"
                     echo ""
                     echo "IPv6 support disabled"
                     echo ""
@@ -3066,6 +3081,7 @@ toggle_ipv6() {
             fi
 
             OVPN_IPV6_ENABLE="yes"
+            log_action "IPv6 enabled (mode=${OVPN_IPV6_MODE} subnet=${OVPN_IPV6_POOL} instance=${OVPN_INSTANCE})"
             echo ""
             echo "IPv6 support enabled"
             echo "  Mode: $OVPN_IPV6_MODE"
@@ -3204,6 +3220,7 @@ key_management_first_time() {
     fi
 
     echo ""
+    log_action "PKI initialized (algo=${OVPN_CRYPTO_ALGO} instance=${OVPN_INSTANCE})"
     echo "PKI initialized with the following settings:"
     show_crypto_summary
 
@@ -3475,6 +3492,7 @@ safe_restart_openvpn() {
                 /etc/init.d/openvpn restart "$instance"
                 sleep 2
                 if [ -n "$(get_openvpn_pid "$instance")" ]; then
+                    log_action "server restarted (instance=${instance})"
                     echo "Server restarted successfully."
                 else
                     echo "WARNING: Server may have failed to start. Check logs: logread | grep openvpn"
@@ -3509,6 +3527,7 @@ safe_restart_openvpn() {
                 echo "/etc/init.d/openvpn restart $instance" | at "$schedule_time" 2>/dev/null
 
                 if [ $? -eq 0 ]; then
+                    log_action "server restart scheduled (instance=${instance} time=${schedule_time})"
                     echo ""
                     echo "Restart scheduled successfully for: $schedule_time"
                     echo ""
@@ -3542,6 +3561,7 @@ safe_restart_openvpn() {
         /etc/init.d/openvpn restart "$instance"
         sleep 2
         if [ -n "$(get_openvpn_pid "$instance")" ]; then
+            log_action "server restarted (instance=${instance})"
             echo "Server restarted successfully."
         else
             echo "WARNING: Server may have failed to start. Check logs: logread | grep openvpn"
@@ -3602,6 +3622,7 @@ control_openvpn_server() {
                 echo ""
                 sleep 2
                 if [ -n "$(get_openvpn_pid "$OVPN_INSTANCE")" ]; then
+                    log_action "server started (instance=${OVPN_INSTANCE})"
                     echo "Server started successfully."
                 else
                     echo "WARNING: Server may have failed to start. Check logs with: logread | grep openvpn"
@@ -3623,6 +3644,7 @@ control_openvpn_server() {
                     echo ""
                     sleep 2
                     if [ -z "$(get_openvpn_pid "$OVPN_INSTANCE")" ]; then
+                        log_action "server stopped (instance=${OVPN_INSTANCE})"
                         echo "Server stopped successfully."
                     else
                         echo "WARNING: Server may still be running. Try: killall openvpn"
@@ -4061,6 +4083,17 @@ install_needed_packages() {
 if [ "${SHELLSPEC_TESTING:-}" = "true" ]; then
     return 0 2>/dev/null || exit 0
 fi
+
+# Prevent duplicate sessions
+if [ -f "$OVPN_MGMT_PID" ]; then
+    existing_pid=$(cat "$OVPN_MGMT_PID" 2>/dev/null)
+    if [ -n "$existing_pid" ] && kill -0 "$existing_pid" 2>/dev/null; then
+        echo "ERROR: another session is already running (PID $existing_pid)" >&2
+        exit 1
+    fi
+    rm -f "$OVPN_MGMT_PID"
+fi
+printf '%d\n' "$$" > "$OVPN_MGMT_PID"
 
 # Clear terminal at startup for clean display
 reset

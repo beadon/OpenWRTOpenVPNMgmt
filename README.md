@@ -1,11 +1,18 @@
 # OpenWRT OpenVPN Server Management
 
-**Version: v2.8.0**
+**Version: v2.9.0**
 
 Openwrt VPN setup and management script, making management of Open VPN via CLI much simpler.
 
 The All-in-One OpenVPN Management Script
 Tired of managing keys, ovpn files and all different parts piecemeal? Use this script on the CLI to manage it all.
+
+## What's New in v2.9.0
+
+- **Syslog Integration** - All significant actions (PKI init, server.conf generate/restore, client create/revoke/renew, firewall configure, server start/stop/restart, IPv6 enable/disable, instance create/switch) are logged to the system log via `logger`; filter with `logread -e openvpn-mgmt`
+- **SSH Disconnect Resilience** - Script now exits cleanly when the SSH session drops (kernel SIGHUP via PTY close) rather than spinning at 100% CPU on a deleted PTY; regression test included
+- **Duplicate Session Guard** - Script writes a PID file at startup (`/var/run/openvpn_mgmt.pid`) and refuses to launch a second instance if one is already running
+- **sexpect Integration Tests** - 100 tests across 14 suites covering all menu paths; SSH disconnect regression verified on real OpenWrt hardware
 
 ## What's New in v2.8.0
 

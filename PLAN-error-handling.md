@@ -84,13 +84,13 @@ Phase 3 is now: guard unprotected `uci commit` calls in production paths.
 ### sexpect Integration Tests — COMPLETED (v2.7.0+)
 
 The authoritative integration test harness drives the full interactive menu on a real
-OpenWrt device via `sexpect` (client/server PTY tool). 39 tests in ~12s on Pi 3.
+OpenWrt device via `sexpect` (client/server PTY tool). 100 tests in ~12s on Pi 3.
 
 **Files:**
 ```
 tests/
 ├── run_tests.sh          # Mac-side launcher (SCP + SSH, pre-clean, tee to last_run.txt)
-├── integration_test.sh   # Runs ON device — 5 suites, 39 tests
+├── integration_test.sh   # Runs ON device — 14 suites, 100 tests
 ├── sexpect_helper.sh     # Primitives: spawn_script, expect_send, wait_for, assertions
 └── last_run.txt          # Output of last run (gitignored)
 ```
@@ -101,6 +101,15 @@ tests/
 - Suite 2: server.conf generation — TLS 1.2, AES-256-GCM, dh none
 - Suite 3: Client cert creation, .ovpn profile generation
 - Suite 4: CRL revocation, crl-verify auto-enable, cron install
+- Suite 5: Certificate inspection + bulk .ovpn (options 13, 15, 17, 18, 19)
+- Suite 6: Complete CRL coverage (r→2 renew, r→5 remove cron)
+- Suite 7: File permission check and fix (option 22)
+- Suite 8: Firewall check and configure (options 10, 11)
+- Suite 9: Server start/stop/restart (option s)
+- Suite 10: Crypto config menu (option 2)
+- Suite 11: Instance management (options i, l)
+- Suite 12: Auto-detect server settings (option 4)
+- Suite 13: Config mutations — restore, IPv6 toggle, performance (options 7, 8, 9)
 
 **Verified on:** OpenWrt 25.12.2 / Pi 3, openvpn-mbedtls 2.7.1, easyrsa 3.2.1, sexpect 2.3.14
 
@@ -482,9 +491,27 @@ Add `run_cmd` guards to unprotected `uci commit` calls in production paths:
 ---
 
 ### Future Enhancements (Deferred)
-- Persistent logging to `/var/log/openvpn-mgmt.log`
 - Input validation helpers with timeouts — COMPLETED in Phase 4
 - ShellSpec test suite implementation (see Testing Framework section above)
+
+### PID File — COMPLETED
+- [x] `OVPN_MGMT_PID="/var/run/openvpn_mgmt.pid"` added to path constants
+- [x] Written at startup (after test guard, before `reset`); duplicate-session guard exits with error if a live PID is found
+- [x] Removed in `cleanup()` alongside temp files
+- [x] Used by SSH disconnect regression test to confirm script is at the menu before dropping connection
+
+### SSH Disconnect Regression Test — COMPLETED
+- [x] Uses `sexpect spawn` on device — provides a real PTY regardless of whether run_tests.sh has a local tty
+- [x] Waits for menu via `sexpect expect`, captures script PID via `sexpect get -pid` and daemon PID via `pgrep`
+- [x] Kills sexpect daemon → closes PTY master → kernel delivers SIGHUP to script's foreground process group
+- [x] Polls `kill -0 $SCRIPT_PID` for up to 5s to confirm exit
+- Note: `ssh -tt` approach abandoned — fails silently when caller has no tty (Bash tool / CI context)
+
+### Syslog Integration — COMPLETED (v2.9.0)
+- [x] `log_action` helper: `logger -t "openvpn-mgmt" "$*"` — writes to system log (user.notice)
+- [x] Filterable via `logread -e openvpn-mgmt`; no file I/O, no flash wear
+- [x] 15 call sites: PKI init, server.conf generate/restore, firewall configure, server start/stop/restart/scheduled-restart, client create/revoke/renew, IPv6 enable/disable, instance create/switch
+- Note: `/etc/openvpn/mgmt.log` file approach abandoned — syslog is OpenWrt best practice
 
 ---
 

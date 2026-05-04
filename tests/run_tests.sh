@@ -17,6 +17,7 @@ OVPN_EASYRSA="/etc/easy-rsa"
 OVPN_CONF="/etc/openvpn/server.conf"
 OVPN_DIR="/root/ovpn_config_out"
 CRONTAB="/etc/crontabs/root"
+OVPN_MGMT_PID="/var/run/openvpn_mgmt.pid"
 
 echo "Copying files to $OPENWRT_HOST..."
 scp "$REPO_ROOT/openvpn_server_management.sh" \
@@ -54,3 +55,61 @@ ssh "root@${OPENWRT_HOST}" \
     | tee "$LOG"
 echo ""
 echo "Full output saved to: $LOG"
+
+# ── SSH disconnect regression test ───────────────────────────────────────────
+# Verify that the script exits when the SSH client drops (kernel-delivered
+# SIGHUP via PTY close), rather than spinning at 100% CPU on a deleted PTY.
+#
+# Mechanism: sexpect spawns the script on the device with a real PTY (works
+# regardless of whether run_tests.sh has a local tty). Once the script reaches
+# the menu, we kill the sexpect daemon — this closes the PTY master and
+# delivers SIGHUP to the script's foreground process group, exactly as the
+# kernel does on a real SSH disconnect.
+echo ""
+echo "--- SSH disconnect regression test ---"
+
+# Clean up any leftover state from the integration suite
+ssh "root@${OPENWRT_HOST}" \
+    "pkill -f openvpn_server_management.sh 2>/dev/null; pkill -f 'sexpect.*huptest' 2>/dev/null; rm -f /tmp/sexpect-huptest.sock ${OVPN_MGMT_PID}; true" \
+    2>/dev/null || true
+
+# Spawn the script via sexpect on the device (provides a real PTY).
+# Wait for the menu prompt, then return the sexpect daemon PID and script PID.
+PIDS=$(ssh "root@${OPENWRT_HOST}" '
+    SOCK=/tmp/sexpect-huptest.sock
+    sexpect -sock "$SOCK" spawn /root/openvpn_server_management.sh
+    sexpect -sock "$SOCK" expect -re "Select an option:" -timeout 30 >/dev/null 2>&1 || exit 1
+    SCRIPT_PID=$(sexpect -sock "$SOCK" get -pid 2>/dev/null)
+    DAEMON_PID=$(pgrep -f "sexpect -sock $SOCK" 2>/dev/null | head -1)
+    printf "%s %s\n" "$SCRIPT_PID" "$DAEMON_PID"
+' 2>/dev/null) || true
+
+REMOTE_PID=$(printf '%s' "$PIDS" | awk '{print $1}' | tr -d '[:space:]')
+SEXP_PID=$(printf  '%s' "$PIDS" | awk '{print $2}' | tr -d '[:space:]')
+
+if [ -z "$REMOTE_PID" ] || [ -z "$SEXP_PID" ]; then
+    ssh "root@${OPENWRT_HOST}" "pkill -f 'sexpect.*huptest' 2>/dev/null; true" 2>/dev/null || true
+    echo "FAIL: script did not reach menu within 30s (script_pid='${REMOTE_PID}' sexp_pid='${SEXP_PID}')"
+    exit 1
+fi
+
+echo "  script PID: $REMOTE_PID  sexpect daemon PID: $SEXP_PID"
+
+# Simulate SSH disconnect: kill the sexpect daemon to close the PTY master.
+# The kernel delivers SIGHUP to the script's foreground process group.
+ssh "root@${OPENWRT_HOST}" "kill ${SEXP_PID}" 2>/dev/null || true
+
+# Wait up to 5 seconds for the remote script to exit.
+ELAPSED=0
+while ssh "root@${OPENWRT_HOST}" "kill -0 ${REMOTE_PID}" 2>/dev/null; do
+    if [ $ELAPSED -ge 5 ]; then
+        ssh "root@${OPENWRT_HOST}" "kill -9 ${REMOTE_PID}" 2>/dev/null || true
+        echo "FAIL: script (pid ${REMOTE_PID}) still running ${ELAPSED}s after PTY close — HUP exit not working"
+        exit 1
+    fi
+    sleep 1
+    ELAPSED=$((ELAPSED + 1))
+done
+
+echo "PASS: script exited within ${ELAPSED}s of PTY close (pid ${REMOTE_PID})"
+echo ""
