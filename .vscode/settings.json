@@ -1,0 +1,7 @@
+{
+	"shellcheck.enable": true,
+    "shellcheck.run": "onType",
+    "shellcheck.executablePath": "/usr/local/bin/shellcheck",
+    "shellcheck.customArgs": ["--exclude=SC3043,SC3045", "--shell=sh"],             
+    "shellcheck.enableQuickFix": true
+} 
