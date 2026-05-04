@@ -642,17 +642,17 @@ check_dhcpv6_prerequisites() {
 }
 
 # Generate an RFC 4193-compliant ULA /64 prefix.
-# Format: fd<XX>:<XXXX>:<XXXX>:1194::/64
+# Format: fd<XX>:<XXXX>:<XXXX>:1::/64
 #   - fd = FC00::/7 ULA, L=1 (locally assigned)
 #   - 5 random bytes as the 40-bit global ID (per RFC 4193 §3.2)
-#   - 1194 as the 16-bit subnet ID (matches the default VPN port — memorable, deterministic)
+#   - subnet ID 1 (first subnet of the /48 — conventional, no layer-4 bleed)
 # Returns the prefix string on stdout; exits non-zero if /dev/urandom or hexdump unavailable.
 # Generate a single RFC 4193 ULA /64 candidate (no conflict check).
 generate_ula_prefix() {
     local raw
     raw=$(dd if=/dev/urandom bs=5 count=1 2>/dev/null | hexdump -v -e '1/1 "%02x"') || return 1
     [ "${#raw}" -lt 10 ] && return 1
-    printf 'fd%s:%s:%s:1194::/64\n' \
+    printf 'fd%s:%s:%s:1::/64\n' \
         "$(printf '%s' "$raw" | cut -c1-2)" \
         "$(printf '%s' "$raw" | cut -c3-6)" \
         "$(printf '%s' "$raw" | cut -c7-10)"
@@ -907,7 +907,7 @@ auto_detect_fqdn() {
             echo "  Detected IPv4 VPN subnet: $OVPN_POOL"
         fi
 
-        # Detect IPv6 pool (format: "server-ipv6 fd42:4242:4242:1194::/64")
+        # Detect IPv6 pool (format: "server-ipv6 fdXX:XXXX:XXXX:1::/64")
         DETECTED_IPV6_POOL=$(grep "^server-ipv6 " "$OVPN_SERVER_CONF" | awk '{print $2}')
         if [ -n "$DETECTED_IPV6_POOL" ]; then
             OVPN_IPV6_POOL="$DETECTED_IPV6_POOL"
