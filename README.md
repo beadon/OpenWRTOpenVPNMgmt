@@ -62,6 +62,7 @@ Tired of managing keys, ovpn files and all different parts piecemeal? Use this s
   - [LuCI Integration](#luci-integration)
   - [OpenVPN Monitoring](#openvpn-monitoring)
 - [Quick Reference - Common Operations](#quick-reference---common-operations)
+  - [Examine Management Logs](#examine-management-logs)
   - [Revoke a Client Certificate](#revoke-a-client-certificate)
   - [Manage CRL (Certificate Revocation List)](#manage-crl-certificate-revocation-list)
 - [Troubleshooting](#troubleshooting)
@@ -606,6 +607,7 @@ After running **Menu Option 11** (Configure VPN firewall access), the VPN tunnel
   - Select specific instance to monitor OR monitor all instances
   - Sends SIGUSR2 to correct instance-specific process
   - Shows per-instance network status and client connections
+  - Management actions are written to the system log — view with `logread -e openvpn-mgmt`
 
 ## Instance-Aware Operations
   - All operations now use the selected instance
@@ -638,6 +640,38 @@ Shows:
 - IPv4/IPv6 addresses in use
 - Bandwidth usage per client
 - Connection times
+
+### Examine Management Logs
+
+The script logs all significant actions to the OpenWrt system log via `logger`. Entries are tagged `openvpn-mgmt` and appear alongside the OpenVPN daemon's own log lines.
+
+**View all management actions:**
+```sh
+logread -e openvpn-mgmt
+```
+
+**Sample output:**
+```
+Mon May  4 04:40:31 2026 user.notice openvpn-mgmt: PKI initialized (algo=ec instance=server)
+Mon May  4 04:40:31 2026 user.notice openvpn-mgmt: server.conf generated (instance=server)
+Mon May  4 04:40:32 2026 user.notice openvpn-mgmt: client created (client=alice instance=server)
+Mon May  4 04:40:37 2026 user.notice openvpn-mgmt: firewall configured (instance=server)
+Mon May  4 04:40:40 2026 user.notice openvpn-mgmt: server started (instance=server)
+```
+
+**View management and OpenVPN daemon logs together:**
+```sh
+logread -e openvpn
+```
+
+**Follow the log in real time:**
+```sh
+logread -f -e openvpn-mgmt
+```
+
+Logged actions: PKI init, server.conf generate/restore, firewall configure, server start/stop/restart, client create/revoke/renew, IPv6 enable/disable, instance create/switch.
+
+> **Note:** OpenWrt uses an in-memory circular log buffer (default 64 KB). Logs do not persist across reboots. For persistent logging, configure remote syslog forwarding in **System → System → Logging** in LuCI, or via `/etc/config/system` (`log_ip` / `log_port` options).
 
 ### Create Additional Clients
 
