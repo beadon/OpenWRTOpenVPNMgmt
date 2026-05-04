@@ -84,13 +84,13 @@ Phase 3 is now: guard unprotected `uci commit` calls in production paths.
 ### sexpect Integration Tests — COMPLETED (v2.7.0+)
 
 The authoritative integration test harness drives the full interactive menu on a real
-OpenWrt device via `sexpect` (client/server PTY tool). 100 tests in ~12s on Pi 3.
+OpenWrt device via `sexpect` (client/server PTY tool). 109 tests in ~15s on Pi 3.
 
 **Files:**
 ```
 tests/
 ├── run_tests.sh          # Mac-side launcher (SCP + SSH, pre-clean, tee to last_run.txt)
-├── integration_test.sh   # Runs ON device — 14 suites, 100 tests
+├── integration_test.sh   # Runs ON device — 15 suites, 109 tests
 ├── sexpect_helper.sh     # Primitives: spawn_script, expect_send, wait_for, assertions
 └── last_run.txt          # Output of last run (gitignored)
 ```
@@ -110,6 +110,7 @@ tests/
 - Suite 11: Instance management (options i, l)
 - Suite 12: Auto-detect server settings (option 4)
 - Suite 13: Config mutations — restore, IPv6 toggle, performance (options 7, 8, 9)
+- Suite 14: IPv6 ULA prefix generation — RFC 4193, config persistence, enable/disable cycle
 
 **Verified on:** OpenWrt 25.12.2 / Pi 3, openvpn-mbedtls 2.7.1, easyrsa 3.2.1, sexpect 2.3.14
 
@@ -669,7 +670,7 @@ For static mode the comment is optional (inferred), but written for explicitness
 
 **Phase 1 — RFC 4193-compliant prefix generation — COMPLETE**
 - [x] `generate_ula_prefix()`: reads 5 random bytes from `/dev/urandom` via `hexdump`,
-      formats as `fdXX:XXXX:XXXX:1194::/64` (subnet ID = VPN port, per RFC 4193 §3.2)
+      formats as `fdXX:XXXX:XXXX:1::/64` (subnet ID `:1` = first subnet of /48, per community convention)
 - [x] `generate_ula_prefix_safe()`: retries up to 3 times with conflict check
 - [x] Called at option 5 (generate server.conf) when IPv6 enabled and pool is empty
 - [x] Hardcoded `fd42:4242:4242:1194::/64` removed; empty string sentinel triggers generation

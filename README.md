@@ -9,7 +9,7 @@ Tired of managing keys, ovpn files and all different parts piecemeal? Use this s
 
 ## What's New in v2.10.0
 
-- **RFC 4193 IPv6 ULA Generation** - When enabling IPv6 (option 8), leave the subnet blank to auto-generate a random RFC 4193-compliant ULA prefix (`fdXX:XXXX:XXXX:1194::/64`) using `/dev/urandom`; subnet ID 1194 matches the default VPN port
+- **RFC 4193 IPv6 ULA Generation** - When enabling IPv6 (option 8), leave the subnet blank to auto-generate a random RFC 4193-compliant ULA prefix (`fdXX:XXXX:XXXX:1::/64`) using `/dev/urandom`; subnet ID `:1` is the conventional first subnet of the generated /48
 - **IPv6 Config Persistence** - IPv6 settings are persisted in `server.conf` as real OpenVPN directives (`server-ipv6`) plus structured comment hints (`# openvpn-mgmt: ipv6_mode=`, `ipv6_max_clients=`); settings survive script restarts without a separate config file
 - **ULA Conflict Detection** - Generated prefix is checked against the router's active LAN IPv6 prefix; retries up to 3 times if a collision is detected (statistically near-impossible but handled correctly)
 - **Numbered Test Output** - Integration test output now uses `suite.test` numbering (e.g. `PASS 14.3`) for easier navigation in logs
@@ -317,7 +317,6 @@ Enter max clients limit (default 253): 100
 - **Private ULA (auto-generated):** Leave the subnet blank — the script generates a random
   RFC 4193-compliant prefix (`fdXX:XXXX:XXXX:1::/64`) using `/dev/urandom`, checks it
   against the router's LAN prefix to avoid collisions, and persists it in `server.conf`.
-  The subnet ID `1194` matches the default VPN port for easy identification.
 - **Private ULA (manual):** Enter any `fd00::/8` prefix in `/64` notation.
 
 ### Step 5.5: Configure Performance Settings (Optional)
@@ -1321,7 +1320,7 @@ Edit variables at the top of the script before running:
 OVPN_PORT="1194"              # VPN port
 OVPN_PROTO="udp"              # Protocol: udp or tcp
 OVPN_POOL="10.8.0.0 255.255.255.0"  # IPv4 VPN subnet
-OVPN_IPV6_POOL="fd42:4242:4242:1194::/64"  # IPv6 VPN subnet
+OVPN_IPV6_POOL=""                           # IPv6 VPN subnet (auto-generated on first use)
 OVPN_IPV6_POOL_SIZE="253"     # Max clients
 ```
 
@@ -1404,7 +1403,7 @@ If your ISP delegates `2001:db8:1234::/56`, you can use any /64 subnet within it
 # Available subnets from 2001:db8:1234::/56:
 # 2001:db8:1234:0::/64    (LAN)
 # 2001:db8:1234:1::/64    (Guest network)
-# 2001:db8:1234:1194::/64 (OpenVPN) ← Recommended for VPN
+# 2001:db8:1234:1::/64    (OpenVPN) ← use next available subnet
 # ... up to 2001:db8:1234:ff::/64
 ```
 
