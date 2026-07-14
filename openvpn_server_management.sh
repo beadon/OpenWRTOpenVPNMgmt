@@ -1720,7 +1720,7 @@ renew_certificate() {
     
     # Use easyrsa renew command (available in easyrsa 3.2.1+)
     # If renew is not available, use the expire + sign-req method
-    if easyrsa help 2>&1 | grep -q "renew"; then
+    if easyrsa help 2>&1 | grep -q "\brenew\b"; then
         easyrsa renew "$cert_name" nopass
     else
         echo "Note: Using expire + sign-req method (easyrsa < 3.2.1)"
