@@ -319,7 +319,7 @@ check_dhcpv6_prerequisites() {
 
     # Check if odhcpd is installed
     echo "Checking for odhcpd package..."
-    if apk-info | grep -q "^odhcpd "; then
+    if apk info | grep -q "^odhcpd "; then
         echo "  ✓ odhcpd is installed"
     else
         echo "  ✗ odhcpd is NOT installed"
