@@ -319,12 +319,12 @@ check_dhcpv6_prerequisites() {
 
     # Check if odhcpd is installed
     echo "Checking for odhcpd package..."
-    if opkg list-installed | grep -q "^odhcpd "; then
+    if apk-info | grep -q "^odhcpd "; then
         echo "  ✓ odhcpd is installed"
     else
         echo "  ✗ odhcpd is NOT installed"
         echo ""
-        echo "    To install: opkg update && opkg install odhcpd"
+        echo "    To install: apk update && apkg add odhcpd"
         all_ok=0
     fi
 
@@ -2698,7 +2698,7 @@ install_luci_openvpn() {
 
     echo ""
     echo "Updating package lists..."
-    if ! opkg update; then
+    if ! apk update; then
         echo "Error: Failed to update package lists"
         echo "Check your internet connection"
         return 1
@@ -2706,7 +2706,7 @@ install_luci_openvpn() {
 
     echo ""
     echo "Installing luci-app-openvpn..."
-    if opkg install luci-app-openvpn; then
+    if apk add luci-app-openvpn; then
         echo ""
         echo "Installation complete!"
         echo ""
@@ -2871,7 +2871,7 @@ ensure_at_installed() {
         echo "Installing 'at' package..."
         echo ""
 
-        if opkg update && opkg install at; then
+        if apk update && apk add at; then
             echo ""
             echo "'at' utility installed successfully."
 

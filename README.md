@@ -20,8 +20,8 @@ Tired of managing keys, ovpn files and all different parts piecemeal? Use this s
 
 Assuming you have installed wget...
 ```
-opkg update
-opkg install wget
+apk update
+apk add wget
 ```
 Then if you are SSSH'd into OpenWRT now, grab then run it like this:
 ```
@@ -38,8 +38,8 @@ This guide assumes you're starting from scratch with nothing installed. Follow t
 
 1. **Install required packages:**
    ```bash
-   opkg update
-   opkg install openvpn-openssl wget
+   apk update
+   apk add openvpn-openssl wget
    ```
 
 2. **Download and run the script:**
@@ -341,7 +341,7 @@ scp root@192.168.1.1:/root/ovpn_config_out/bill.laptop.ovpn ~/Downloads/
 ```
 
 **Or via LuCI Web Interface:**
-NOTE: file browser is installable as ```opkg install luci-app-filemanager```
+NOTE: file browser is installable as ```apkg add luci-app-filemanager```
 
 1. Navigate to System → File Browser (if available)
 
@@ -400,7 +400,7 @@ One the client device (the laptop or mobile device) open a browser while the VPN
 
 ## LuCI Integration
   - Install luci-app-openvpn with one command
-  - Automatic opkg update and package installation
+  - Automatic apk update and package installation
   - Changes made in LuCI web interface appear in this script and vice versa
 
 ### Viewing VPN Tunnel in LuCI
@@ -619,7 +619,7 @@ To cancel a scheduled job: atrm <job_number>
 **Automatic 'at' Installation:**
 
 The `at` utility (for scheduling) is automatically installed if not present:
-- Runs `opkg update && opkg install at`
+- Runs `apk update && apk add at`
 - Enables and starts the `atd` daemon
 - Provides job management commands (`atq`, `atrm`)
 
@@ -1413,7 +1413,7 @@ Check prerequisites and show configuration guide? (y/n): y
 **Step 2: Review the prerequisite check results**
 
 The script will check:
-- Is odhcpd installed? If not: `opkg update && opkg install odhcpd`
+- Is odhcpd installed? If not: `apk update && apk add odhcpd`
 - Is odhcpd running? If not: `/etc/init.d/odhcpd start && /etc/init.d/odhcpd enable`
 
 **Step 3: Follow the manual configuration guide**
