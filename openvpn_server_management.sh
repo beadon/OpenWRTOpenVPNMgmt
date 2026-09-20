@@ -1,17 +1,38 @@
 #!/bin/sh
-################################################################################
+# Strict mode: exit on undefined variables
+# To disable if issues arise, comment out the next line
+set -u
+###############################################################################
+#                               LICENSE
+# Copyright (C) 2025 Bryant Eadon
+#
+# This program is free software; you can redistribute it and/or
+# modify it under the terms of the GNU General Public License
+# as published by the Free Software Foundation; either version 2
+# of the License, or (at your option) any later version.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with this program; if not, see
+# <https://www.gnu.org/licenses/>.
+###############################################################################
+###############################################################################
 #                   OpenWRT OpenVPN Server Management Script                  #
-#                                                                              #
-#  Version: v2.5                                                               #
+#                                                                             #
+#  Version: v2.10.0                                                           #
 #  Repository: https://github.com/beadon/OpenWRTOpenVPNMgmt                   #
-#                                                                              #
+#                                                                             #
 #  All-in-one OpenVPN server management for OpenWrt                           #
 #  - Certificate management, client configs, server control                   #
 #  - Safe restart with connection awareness and scheduling                    #
 #  - IPv6 support, firewall configuration, monitoring                         #
-################################################################################
+###############################################################################
 
-SCRIPT_VERSION="v2.5"
+readonly SCRIPT_VERSION="v2.10.0"
 
 ################################################################################
 #                        USER CONFIGURATION SECTION                            #
@@ -25,17 +46,32 @@ OVPN_INSTANCE="server"
 OVPN_SERV="vpn.example.com"              # Your VPN server address (FQDN or IP)
 OVPN_PORT="1194"                         # VPN port
 OVPN_PROTO="udp"                         # Protocol: udp or tcp
-OVPN_POOL="10.8.0.0 255.255.255.0"      # VPN IPv4 subnet and netmask
+OVPN_POOL="10.8.0.0 255.255.255.0"       # VPN IPv4 subnet and netmask
 
 # IPv6 Configuration
 OVPN_IPV6_ENABLE="no"                    # Enable IPv6: yes or no
 OVPN_IPV6_MODE="static"                  # Mode: "static" (simple) or "dhcpv6" (advanced)
-OVPN_IPV6_POOL="fd42:4242:4242:1194::/64"  # IPv6 VPN subnet (ULA or global)
+OVPN_IPV6_POOL=""                            # IPv6 VPN subnet — generated at first use (RFC 4193)
 OVPN_IPV6_POOL_SIZE="253"                # Max IPv6 clients (for tracking)
 
 # Directory Paths
 OVPN_PKI="/etc/easy-rsa/pki"             # PKI directory for certificates
 OVPN_DIR="/root/ovpn_config_out"         # Output directory for client configs
+OVPN_CRL_LOG="/tmp/openvpn-crl-renewal.log"  # CRL auto-renewal log (volatile, lost on reboot)
+OVPN_MGMT_PID="/var/run/openvpn_mgmt.pid"   # PID file — prevents duplicate sessions
+
+# Cryptography Settings
+# OVPN_CRYPTO_ALGO: "ec" (recommended, faster on router hardware, requires OpenVPN 2.4+)
+#                   "rsa" (compatibility mode for pre-2.4 clients)
+OVPN_CRYPTO_ALGO="ec"
+# OVPN_CRYPTO_CURVE: EC curve (used when OVPN_CRYPTO_ALGO=ec)
+#   prime256v1 = NIST P-256, strong and widely supported
+#   secp384r1  = NIST P-384, higher security margin, slightly slower
+OVPN_CRYPTO_CURVE="prime256v1"
+# OVPN_RSA_KEY_SIZE: RSA key size in bits (used when OVPN_CRYPTO_ALGO=rsa)
+#   2048 = minimum permitted, broad compatibility
+#   4096 = maximum, slower PKI generation on constrained hardware
+OVPN_RSA_KEY_SIZE="2048"
 
 ################################################################################
 #                   ADVANCED CONFIGURATION (Auto-detected)                     #
@@ -43,7 +79,8 @@ OVPN_DIR="/root/ovpn_config_out"         # Output directory for client configs
 ################################################################################
 
 # Instance configuration
-OVPN_INSTANCE_TYPE="server"              # Type: server only (clients not managed)
+# shellcheck disable=SC2034
+readonly OVPN_INSTANCE_TYPE="server"     # Type: server only (clients not managed)
 
 # Dynamic paths (updated when instance changes)
 OVPN_SERVER_CONF="/etc/openvpn/${OVPN_INSTANCE}.conf"
@@ -57,8 +94,8 @@ export EASYRSA_BATCH="1"
 OVPN_DNS="${OVPN_POOL%.* *}.1"
 OVPN_DOMAIN=$(uci get dhcp.@dnsmasq[0].domain 2>/dev/null || echo "lan")
 
-# Auto-detect IPv6 DNS (first address in IPv6 pool)
-OVPN_IPV6_DNS="${OVPN_IPV6_POOL%::*}::1"
+# IPv6 DNS derived from pool — set after pool is known (see load_ipv6_config_from_conf)
+OVPN_IPV6_DNS=""
 
 # Performance configuration for CPU-limited devices
 # Note: Compression is NOT configured due to OpenVPN deprecation and stability issues
@@ -71,6 +108,102 @@ update_instance_paths() {
     OVPN_SERVER_CONF="/etc/openvpn/${OVPN_INSTANCE}.conf"
     OVPN_SERVER_BACKUP="/etc/openvpn/${OVPN_INSTANCE}.conf.BAK"
 }
+
+################################################################################
+#                          ERROR HANDLING FUNCTIONS                            #
+################################################################################
+
+# Temp file tracking for cleanup
+TEMP_FILES=""
+
+# Cleanup handler - removes registered temp files and PID file on exit
+cleanup() {
+    local file
+    for file in $TEMP_FILES; do
+        rm -f "$file" 2>/dev/null
+    done
+    rm -f "$OVPN_MGMT_PID" 2>/dev/null
+}
+
+# Register cleanup trap for exit and common signals.
+# HUP is separated: SSH session drop must exit, not just clean up, otherwise
+# read -p loops on the deleted PTY burning 100% CPU indefinitely.
+trap cleanup EXIT INT TERM
+trap 'cleanup; exit 0' HUP
+
+# Register a temp file for automatic cleanup
+register_temp() {
+    TEMP_FILES="$TEMP_FILES $1"
+}
+
+# Fatal error - print message and exit
+error_exit() {
+    echo "ERROR: $1" >&2
+    exit 1
+}
+
+# Warning - print message but continue
+warn() {
+    echo "WARNING: $1" >&2
+}
+
+# Info message to stderr (for logging without cluttering stdout)
+info() {
+    echo "INFO: $1" >&2
+}
+
+# Run command with error reporting
+# Usage: run_cmd "description" command [args...]
+# Returns: 0 on success, 1 on failure (with error message)
+run_cmd() {
+    local desc="$1"
+    shift
+    if ! "$@"; then
+        echo "ERROR: Failed to $desc" >&2
+        return 1
+    fi
+}
+
+log_action() {
+    logger -t "openvpn-mgmt" "$*"
+}
+
+################################################################################
+#                        PACKAGE MANAGER ABSTRACTION                           #
+################################################################################
+
+# OpenWRT 25+ uses apk; older versions use opkg. Detect once at startup.
+if command -v apk >/dev/null 2>&1; then
+    PKG_MGR="apk"
+else
+    PKG_MGR="opkg"
+fi
+
+# Update package lists
+pkg_update() {
+    case "$PKG_MGR" in
+        apk)  apk update ;;
+        opkg) opkg update ;;
+    esac
+}
+
+# Install one or more packages
+pkg_install() {
+    case "$PKG_MGR" in
+        apk)  apk add "$@" ;;
+        opkg) opkg install "$@" ;;
+    esac
+}
+
+# Check whether a package is installed (by exact name)
+pkg_is_installed() {
+    case "$PKG_MGR" in
+        apk)  apk list --installed 2>/dev/null | grep -q "^$1-" ;;
+        opkg) opkg list-installed 2>/dev/null | grep -q "^$1 " ;;
+    esac
+}
+
+################################################################################
 
 # UCI Helper Functions for Instance Management
 
@@ -97,6 +230,133 @@ validate_instance_name() {
     return 0
 }
 
+# Validate a client certificate name (alphanumeric + underscore + hyphen, non-empty)
+validate_client_name() {
+    local name="$1"
+
+    if [ -z "$name" ]; then
+        echo "Error: Client name cannot be empty" >&2
+        return 1
+    fi
+
+    if ! echo "$name" | grep -qE '^[a-zA-Z0-9_-]+$'; then
+        echo "Error: Client name can only contain letters, numbers, underscores, and hyphens" >&2
+        return 1
+    fi
+
+    return 0
+}
+
+# Validate a non-empty string
+validate_non_empty() {
+    local value="$1"
+    local label="${2:-Value}"
+
+    if [ -z "$value" ]; then
+        echo "Error: $label cannot be empty" >&2
+        return 1
+    fi
+
+    return 0
+}
+
+# Validate a non-negative integer
+validate_non_negative_int() {
+    local value="$1"
+    local label="${2:-Value}"
+
+    if [ -z "$value" ]; then
+        echo "Error: $label cannot be empty" >&2
+        return 1
+    fi
+
+    if ! echo "$value" | grep -qE '^[0-9]+$'; then
+        echo "Error: $label must be a non-negative integer" >&2
+        return 1
+    fi
+
+    return 0
+}
+
+# Display current crypto settings summary
+show_crypto_summary() {
+    if [ "$OVPN_CRYPTO_ALGO" = "ec" ]; then
+        echo "  Algorithm:  EC (${OVPN_CRYPTO_CURVE})"
+        echo "  DH params:  Not required (ECDH intrinsic to curve)"
+    else
+        echo "  Algorithm:  RSA ${OVPN_RSA_KEY_SIZE}-bit"
+        echo "  DH params:  ${OVPN_RSA_KEY_SIZE}-bit (generated at PKI init)"
+    fi
+    echo "  TLS min:    1.2"
+    echo "  Cipher:     AES-256-GCM"
+}
+
+# Interactive menu to configure crypto algorithm and parameters
+configure_crypto() {
+    local choice
+    local curve_choice
+    local size_choice
+
+    echo ""
+    echo "=== Cryptography Settings ==="
+    echo ""
+    echo "Current settings:"
+    show_crypto_summary
+    echo ""
+
+    if [ -d "${OVPN_PKI}/issued" ] && ls "${OVPN_PKI}/issued"/*.crt >/dev/null 2>&1; then
+        echo "  WARNING: PKI already initialized. Changing algorithm requires"
+        echo "  re-running option 12 (Initialize EasyRSA), which will destroy"
+        echo "  all existing certificates and client keys."
+        echo ""
+    fi
+
+    echo "  1) EC keys — recommended (fast, strong, requires OpenVPN 2.4+ clients)"
+    echo "  2) RSA keys — compatibility (for pre-2.4 clients or legacy deployments)"
+    echo "  3) Cancel"
+    echo ""
+    read -p "Select algorithm: " choice
+
+    case "$choice" in
+        1)
+            echo ""
+            echo "  EC curve selection:"
+            echo "    1) prime256v1 — NIST P-256 (recommended, widely supported)"
+            echo "    2) secp384r1  — NIST P-384 (higher security margin, slightly slower)"
+            echo ""
+            read -p "Select curve: " curve_choice
+            case "$curve_choice" in
+                1) OVPN_CRYPTO_ALGO="ec"; OVPN_CRYPTO_CURVE="prime256v1" ;;
+                2) OVPN_CRYPTO_ALGO="ec"; OVPN_CRYPTO_CURVE="secp384r1" ;;
+                *) echo "Cancelled."; return 0 ;;
+            esac
+            echo ""
+            echo "Crypto settings updated:"
+            show_crypto_summary
+            ;;
+        2)
+            echo ""
+            echo "  RSA key size:"
+            echo "    1) 2048-bit — minimum permitted, broad compatibility, faster"
+            echo "    2) 4096-bit — maximum, stronger, slower PKI init on router hardware"
+            echo ""
+            read -p "Select key size: " size_choice
+            case "$size_choice" in
+                1) OVPN_CRYPTO_ALGO="rsa"; OVPN_RSA_KEY_SIZE="2048" ;;
+                2) OVPN_CRYPTO_ALGO="rsa"; OVPN_RSA_KEY_SIZE="4096" ;;
+                *) echo "Cancelled."; return 0 ;;
+            esac
+            echo ""
+            echo "Crypto settings updated:"
+            show_crypto_summary
+            ;;
+        3|*) echo "Cancelled."; return 0 ;;
+    esac
+
+    echo ""
+    echo "Note: Re-run option 12 (Initialize EasyRSA) to apply new settings."
+}
+
 # List all OpenVPN instances from UCI
 list_openvpn_instances() {
     echo ""
@@ -111,7 +371,6 @@ list_openvpn_instances() {
     fi
 
     local found_instances=0
-    local instance_list=""
     local instance_name
     local enabled
     local config_file
@@ -120,7 +379,7 @@ list_openvpn_instances() {
     local running_status
 
     # Iterate through UCI sections
-    uci show openvpn 2>/dev/null | grep "=openvpn$" | while IFS='=' read -r section_path section_type; do
+    uci show openvpn 2>/dev/null | grep "=openvpn$" | while IFS='=' read -r section_path _section_type; do
         # Extract instance name from path (e.g., openvpn.server -> server)
         instance_name=$(echo "$section_path" | cut -d'.' -f2)
 
@@ -268,6 +527,8 @@ select_openvpn_instance() {
             if [ -n "$selected_instance" ]; then
                 OVPN_INSTANCE="$selected_instance"
                 update_instance_paths
+                load_ipv6_config_from_conf
+                log_action "instance switched (instance=${OVPN_INSTANCE})"
                 echo ""
                 echo "Selected instance: $OVPN_INSTANCE"
             else
@@ -290,6 +551,7 @@ select_openvpn_instance() {
                 OVPN_INSTANCE="$new_instance"
                 ensure_uci_instance "$OVPN_INSTANCE"
                 update_instance_paths
+                log_action "instance created (instance=${OVPN_INSTANCE})"
                 echo ""
                 echo "Created and selected instance: $OVPN_INSTANCE"
             else
@@ -319,12 +581,12 @@ check_dhcpv6_prerequisites() {
 
     # Check if odhcpd is installed
     echo "Checking for odhcpd package..."
-    if opkg list-installed | grep -q "^odhcpd "; then
+    if pkg_is_installed odhcpd; then
         echo "  ✓ odhcpd is installed"
     else
         echo "  ✗ odhcpd is NOT installed"
         echo ""
-        echo "    To install: opkg update && opkg install odhcpd"
+        echo "    To install: pkg_update && pkg_install odhcpd"
         all_ok=0
     fi
 
@@ -379,12 +641,93 @@ check_dhcpv6_prerequisites() {
     fi
 }
 
+# Generate an RFC 4193-compliant ULA /64 prefix.
+# Format: fd<XX>:<XXXX>:<XXXX>:1::/64
+#   - fd = FC00::/7 ULA, L=1 (locally assigned)
+#   - 5 random bytes as the 40-bit global ID (per RFC 4193 §3.2)
+#   - subnet ID 1 (first subnet of the /48 — conventional, no layer-4 bleed)
+# Returns the prefix string on stdout; exits non-zero if /dev/urandom or hexdump unavailable.
+# Generate a single RFC 4193 ULA /64 candidate (no conflict check).
+generate_ula_prefix() {
+    local raw
+    raw=$(dd if=/dev/urandom bs=5 count=1 2>/dev/null | hexdump -v -e '1/1 "%02x"') || return 1
+    [ "${#raw}" -lt 10 ] && return 1
+    printf 'fd%s:%s:%s:1::/64\n' \
+        "$(printf '%s' "$raw" | cut -c1-2)" \
+        "$(printf '%s' "$raw" | cut -c3-6)" \
+        "$(printf '%s' "$raw" | cut -c7-10)"
+}
+
+# Generate a ULA prefix that doesn't conflict with the router's LAN IPv6.
+# Retries up to 3 times; a collision with a random /48 is astronomically unlikely
+# but correct behaviour per the design.
+generate_ula_prefix_safe() {
+    local attempt=0
+    local prefix
+    while [ $attempt -lt 3 ]; do
+        prefix=$(generate_ula_prefix) || return 1
+        if check_ipv6_subnet_conflict "$prefix" 2>/dev/null; then
+            printf '%s\n' "$prefix"
+            return 0
+        fi
+        attempt=$((attempt + 1))
+        echo "  Generated prefix $prefix conflicts with LAN — retrying..." >&2
+    done
+    echo "ERROR: Could not generate a non-conflicting ULA prefix after 3 attempts" >&2
+    return 1
+}
+
+# Update (or append) # openvpn-mgmt: hint comments in server.conf.
+# Called after toggle_ipv6 mutates IPv6 settings so they persist across restarts.
+# shellcheck disable=SC2120  # optional override arg, always called bare in this repo
+update_ipv6_hints_in_conf() {
+    local conf="${1:-$OVPN_SERVER_CONF}"
+    [ -f "$conf" ] || return 0
+
+    if grep -q '^# openvpn-mgmt: ipv6_mode=' "$conf" 2>/dev/null; then
+        sed -i "s|^# openvpn-mgmt: ipv6_mode=.*|# openvpn-mgmt: ipv6_mode=${OVPN_IPV6_MODE}|" "$conf"
+    else
+        printf '\n# openvpn-mgmt: ipv6_mode=%s\n' "$OVPN_IPV6_MODE" >> "$conf"
+    fi
+
+    if grep -q '^# openvpn-mgmt: ipv6_max_clients=' "$conf" 2>/dev/null; then
+        sed -i "s|^# openvpn-mgmt: ipv6_max_clients=.*|# openvpn-mgmt: ipv6_max_clients=${OVPN_IPV6_POOL_SIZE}|" "$conf"
+    else
+        printf '# openvpn-mgmt: ipv6_max_clients=%s\n' "$OVPN_IPV6_POOL_SIZE" >> "$conf"
+    fi
+}
+
+# Read IPv6 settings back from an existing server.conf.
+# Populates OVPN_IPV6_POOL, OVPN_IPV6_DNS, OVPN_IPV6_MODE, OVPN_IPV6_POOL_SIZE,
+# and OVPN_IPV6_ENABLE from real directives and # openvpn-mgmt: hint comments.
+# Safe to call even when server.conf does not yet exist.
+# shellcheck disable=SC2120  # optional override arg, always called bare in this repo
+load_ipv6_config_from_conf() {
+    local conf="${1:-$OVPN_SERVER_CONF}"
+    [ -f "$conf" ] || return 0
+
+    # Real directive: server-ipv6 <prefix>
+    local pool; pool=$(grep -m1 '^server-ipv6 ' "$conf" 2>/dev/null | awk '{print $2}')
+    if [ -n "$pool" ]; then
+        OVPN_IPV6_POOL="$pool"
+        OVPN_IPV6_DNS="${OVPN_IPV6_POOL%::*}::1"
+        OVPN_IPV6_ENABLE="yes"
+    fi
+
+    # Hint comments written by this script
+    local mode; mode=$(grep -m1 '^# openvpn-mgmt: ipv6_mode=' "$conf" 2>/dev/null | sed 's/.*ipv6_mode=//')
+    [ -n "$mode" ] && OVPN_IPV6_MODE="$mode"
+
+    local max; max=$(grep -m1 '^# openvpn-mgmt: ipv6_max_clients=' "$conf" 2>/dev/null | sed 's/.*ipv6_max_clients=//')
+    [ -n "$max" ] && OVPN_IPV6_POOL_SIZE="$max"
+}
+
 # Function to check if IPv6 subnet conflicts with LAN
 check_ipv6_subnet_conflict() {
     local vpn_subnet="$1"
 
     # Get LAN IPv6 prefix
-    local lan_ipv6=$(ip -6 addr show dev br-lan 2>/dev/null | grep "inet6" | grep -v "fe80::" | grep -v "::1" | head -1)
+    local lan_ipv6; lan_ipv6=$(ip -6 addr show dev br-lan 2>/dev/null | grep "inet6" | grep -v "fe80::" | grep -v "::1" | head -1)
 
     if [ -z "$lan_ipv6" ]; then
         # No LAN IPv6, no conflict possible
@@ -392,8 +735,8 @@ check_ipv6_subnet_conflict() {
     fi
 
     # Extract LAN prefix (simplified comparison)
-    local lan_prefix=$(echo "$lan_ipv6" | awk '{print $2}' | cut -d'/' -f1 | sed 's/::[0-9a-f]*$//')
-    local vpn_prefix=$(echo "$vpn_subnet" | sed 's/::[0-9a-f]*$//' | sed 's/\/[0-9]*$//')
+    local lan_prefix; lan_prefix=$(echo "$lan_ipv6" | awk '{print $2}' | cut -d'/' -f1 | sed 's/::[0-9a-f]*$//')
+    local vpn_prefix; vpn_prefix=$(echo "$vpn_subnet" | sed 's/::[0-9a-f]*$//' | sed 's/\/[0-9]*$//')
 
     # Simple prefix comparison (first 64 bits)
     if [ "$lan_prefix" = "$vpn_prefix" ]; then
@@ -412,26 +755,29 @@ check_ipv6_subnet_conflict() {
 
 # Function to detect IPv6 prefix delegation from WAN
 detect_ipv6_prefix() {
-    local WAN6_IF
-    local wan6_addrs
-    local prefix_delegation
-    local prefix_size
-    local lan_ipv6
-    local lan_prefix
+    local WAN6_IF=""
+    local wan6_addrs=""
+    local prefix_delegation=""
+    local prefix_size=""
+    local lan_ipv6=""
+    local lan_prefix=""
 
     echo "Detecting IPv6 configuration from WAN interface..."
     echo ""
 
-    # Get WAN interface name
+    # Get WAN interface name — network.sh may unset the dest var if no route found,
+    # so keep set +u active until after the empty check.
     . /lib/functions/network.sh
     network_flush_cache
+    set +u
     network_find_wan6 WAN6_IF
-
-    if [ -z "$WAN6_IF" ]; then
+    if [ -z "${WAN6_IF:-}" ]; then
+        set -u
         echo "  No WAN IPv6 interface found"
         echo "  IPv6 may not be configured on this router"
         return 1
     fi
+    set -u
 
     echo "  WAN IPv6 interface: $WAN6_IF"
 
@@ -506,17 +852,17 @@ detect_ipv6_prefix() {
 
 # Auto-Detect DDNS configured name, Fetch server address configured elsewhere
 auto_detect_fqdn() {
-    local DETECTED_PORT
-    local DETECTED_PROTO
-    local DETECTED_POOL
-    local DETECTED_IPV6_POOL
-    local rule_index
-    local rule_name
-    local rule_dest_port
-    local rule_proto
-    local NET_FQDN
-    local NET_IF
-    local NET_ADDR
+    local DETECTED_PORT=""
+    local DETECTED_PROTO=""
+    local DETECTED_POOL=""
+    local DETECTED_IPV6_POOL=""
+    local rule_index=""
+    local rule_name=""
+    local rule_dest_port=""
+    local rule_proto=""
+    local NET_FQDN=""
+    local NET_IF=""
+    local NET_ADDR=""
 
     echo ""
     echo "Script default settings (if no config found):"
@@ -563,7 +909,7 @@ auto_detect_fqdn() {
             echo "  Detected IPv4 VPN subnet: $OVPN_POOL"
         fi
 
-        # Detect IPv6 pool (format: "server-ipv6 fd42:4242:4242:1194::/64")
+        # Detect IPv6 pool (format: "server-ipv6 fdXX:XXXX:XXXX:1::/64")
         DETECTED_IPV6_POOL=$(grep "^server-ipv6 " "$OVPN_SERVER_CONF" | awk '{print $2}')
         if [ -n "$DETECTED_IPV6_POOL" ]; then
             OVPN_IPV6_POOL="$DETECTED_IPV6_POOL"
@@ -624,12 +970,14 @@ auto_detect_fqdn() {
     # Update DNS based on detected pool
     OVPN_DNS="${OVPN_POOL%.* *}.1"
 
-    # Detect server FQDN/IP
+    # Detect server FQDN/IP — network.sh may unset dest vars; keep set +u active
     NET_FQDN="$(uci -q get ddns.@service[0].lookup_host)"
     . /lib/functions/network.sh
     network_flush_cache
+    set +u
     network_find_wan NET_IF
-    network_get_ipaddr NET_ADDR "${NET_IF}"
+    network_get_ipaddr NET_ADDR "${NET_IF:-}"
+    set -u
     if [ -n "${NET_FQDN}" ]
     then
         OVPN_SERV="${NET_FQDN}"
@@ -875,8 +1223,11 @@ configure_vpn_firewall() {
     fi
 
     # Commit changes
-    uci commit firewall
+    if ! run_cmd "commit firewall configuration" uci commit firewall; then
+        return 1
+    fi
 
+    log_action "firewall configured (instance=${OVPN_INSTANCE})"
     echo ""
     echo "Firewall configuration updated"
     echo ""
@@ -922,7 +1273,7 @@ diagnose_ipv6_routing() {
 
     # Check 1: IPv6 forwarding enabled
     echo "1. Checking IPv6 forwarding..."
-    local ipv6_forward=$(cat /proc/sys/net/ipv6/conf/all/forwarding 2>/dev/null)
+    local ipv6_forward; ipv6_forward=$(cat /proc/sys/net/ipv6/conf/all/forwarding 2>/dev/null)
     if [ "$ipv6_forward" = "1" ]; then
         echo "   [OK] IPv6 forwarding is enabled"
     else
@@ -934,7 +1285,7 @@ diagnose_ipv6_routing() {
 
     # Check 2: Router has IPv6 WAN connectivity
     echo "2. Checking router IPv6 WAN connectivity..."
-    local wan6_addr=$(ip -6 addr show | grep "scope global" | grep -v "fd00:" | grep -v "fe80:" | head -1)
+    local wan6_addr; wan6_addr=$(ip -6 addr show | grep "scope global" | grep -v "fd00:" | grep -v "fe80:" | head -1)
     if [ -n "$wan6_addr" ]; then
         echo "   [OK] Router has global IPv6 address"
         echo "   $wan6_addr"
@@ -973,7 +1324,7 @@ diagnose_ipv6_routing() {
     # Check 5: IPv6 route for VPN subnet
     echo "5. Checking IPv6 routes for VPN subnet..."
     if [ "$OVPN_IPV6_ENABLE" = "yes" ]; then
-        local vpn_prefix=$(echo "$OVPN_IPV6_POOL" | cut -d'/' -f1 | sed 's/::[0-9a-f:]*$//')
+        local vpn_prefix; vpn_prefix=$(echo "$OVPN_IPV6_POOL" | cut -d'/' -f1 | sed 's/::[0-9a-f:]*$//')
         if ip -6 route show | grep -q "$vpn_prefix"; then
             echo "   [OK] Route exists for VPN IPv6 subnet"
             ip -6 route show | grep "$vpn_prefix" | sed 's/^/   /'
@@ -1258,13 +1609,17 @@ generate_server_conf() {
     echo ""
     echo "IPv6 Settings:"
     if [ "$OVPN_IPV6_ENABLE" = "yes" ]; then
-        OVPN_IPV6_SERVER="${OVPN_IPV6_POOL%::*}::1"
-        OVPN_IPV6_CLIENT="${OVPN_IPV6_POOL%::*}::2"
         echo "  Status: ENABLED - IPv6 will be configured"
-        echo "  VPN Subnet: $OVPN_IPV6_POOL"
-        echo "  Server Address: $OVPN_IPV6_SERVER"
-        echo "  Client Address: $OVPN_IPV6_CLIENT"
-        echo "  DNS Server: $OVPN_IPV6_DNS"
+        if [ -n "$OVPN_IPV6_POOL" ]; then
+            OVPN_IPV6_SERVER="${OVPN_IPV6_POOL%::*}::1"
+            OVPN_IPV6_CLIENT="${OVPN_IPV6_POOL%::*}::2"
+            echo "  VPN Subnet: $OVPN_IPV6_POOL"
+            echo "  Server Address: $OVPN_IPV6_SERVER"
+            echo "  Client Address: $OVPN_IPV6_CLIENT"
+            echo "  DNS Server: ${OVPN_IPV6_POOL%::*}::1"
+        else
+            echo "  VPN Subnet: (RFC 4193 ULA prefix will be generated)"
+        fi
         echo "  Routes: All IPv6 traffic (2000::/3) via VPN"
     else
         echo "  Status: DISABLED - IPv6 will NOT be configured"
@@ -1322,7 +1677,9 @@ generate_server_conf() {
         
         # Create backup
         echo "Creating backup..."
-        cp "$OVPN_SERVER_CONF" "$OVPN_SERVER_BACKUP"
+        if ! run_cmd "create backup of server.conf" cp "$OVPN_SERVER_CONF" "$OVPN_SERVER_BACKUP"; then
+            return 1
+        fi
         echo "Backup created: $OVPN_SERVER_BACKUP"
     else
         echo "No existing server.conf found. Creating new configuration."
@@ -1336,10 +1693,12 @@ generate_server_conf() {
     
     echo ""
     echo "Generating server.conf..."
-    
+
     # Ensure directory exists
-    mkdir -p "$(dirname "$OVPN_SERVER_CONF")"
-    
+    if ! run_cmd "create config directory" mkdir -p "$(dirname "$OVPN_SERVER_CONF")"; then
+        return 1
+    fi
+
     # Generate server configuration
     cat << EOF > ${OVPN_SERVER_CONF}
 # OpenVPN Server Configuration
@@ -1356,8 +1715,24 @@ topology subnet
 
 EOF
 
+    if [ ! -s "${OVPN_SERVER_CONF}" ]; then
+        echo "ERROR: Failed to write server configuration to ${OVPN_SERVER_CONF}" >&2
+        return 1
+    fi
+
     # Add IPv6 configuration if enabled
     if [ "$OVPN_IPV6_ENABLE" = "yes" ]; then
+        # Generate a compliant ULA prefix if none has been set yet
+        if [ -z "$OVPN_IPV6_POOL" ]; then
+            echo "Generating RFC 4193-compliant ULA prefix..."
+            OVPN_IPV6_POOL=$(generate_ula_prefix_safe) || {
+                echo "ERROR: Failed to generate ULA prefix — check /dev/urandom" >&2
+                return 1
+            }
+            echo "  Generated: $OVPN_IPV6_POOL"
+        fi
+        OVPN_IPV6_DNS="${OVPN_IPV6_POOL%::*}::1"
+
         # Warn if DHCPv6 mode is selected (not fully automated yet)
         if [ "$OVPN_IPV6_MODE" = "dhcpv6" ]; then
             echo ""
@@ -1390,9 +1765,24 @@ EOF
 ca ${OVPN_PKI}/ca.crt
 cert ${OVPN_PKI}/issued/server.crt
 key ${OVPN_PKI}/private/server.key
-dh ${OVPN_PKI}/dh.pem
+EOF
 
-# TLS authentication
+    # DH parameters only required for RSA; EC uses ECDH (no dh.pem needed)
+    if [ "$OVPN_CRYPTO_ALGO" != "ec" ]; then
+        cat << EOF >> ${OVPN_SERVER_CONF}
+dh ${OVPN_PKI}/dh.pem
+EOF
+    else
+        cat << EOF >> ${OVPN_SERVER_CONF}
+dh none
+EOF
+    fi
+
+    cat << EOF >> ${OVPN_SERVER_CONF}
+
+# TLS hardening
+tls-version-min 1.2
+data-ciphers AES-256-GCM
 tls-crypt-v2 ${OVPN_PKI}/private/server.pem
 
 # Client configuration
@@ -1450,6 +1840,15 @@ EOF
 # Certificate Revocation List (uncomment after first revocation)
 # crl-verify ${OVPN_PKI}/crl.pem
 EOF
+
+    # Write openvpn-mgmt hint comments so settings survive a script restart
+    if [ "$OVPN_IPV6_ENABLE" = "yes" ]; then
+        cat << EOF >> ${OVPN_SERVER_CONF}
+
+# openvpn-mgmt: ipv6_mode=${OVPN_IPV6_MODE}
+# openvpn-mgmt: ipv6_max_clients=${OVPN_IPV6_POOL_SIZE}
+EOF
+    fi
     
     echo ""
     echo "Server configuration created: $OVPN_SERVER_CONF"
@@ -1460,7 +1859,10 @@ EOF
     ensure_uci_instance "$OVPN_INSTANCE"
     uci set openvpn.${OVPN_INSTANCE}.config="$OVPN_SERVER_CONF"
     uci set openvpn.${OVPN_INSTANCE}.enabled=1
-    uci commit openvpn
+    if ! run_cmd "commit OpenVPN UCI configuration" uci commit openvpn; then
+        return 1
+    fi
+    log_action "server.conf generated (instance=${OVPN_INSTANCE})"
     echo "UCI instance '$OVPN_INSTANCE' updated"
     echo ""
 
@@ -1525,8 +1927,11 @@ restore_server_conf() {
     fi
     
     echo "Restoring configuration..."
-    cp "$OVPN_SERVER_BACKUP" "$OVPN_SERVER_CONF"
-    
+    if ! run_cmd "restore configuration from backup" cp "$OVPN_SERVER_BACKUP" "$OVPN_SERVER_CONF"; then
+        return 1
+    fi
+
+    log_action "server.conf restored from backup (instance=${OVPN_INSTANCE})"
     echo "Configuration restored from backup"
     echo ""
     
@@ -1565,6 +1970,7 @@ check_expiration() {
     local cert
     local basename
     local not_after
+    local not_after_stripped
     local exp_date
     local days_left
 
@@ -1578,6 +1984,7 @@ check_expiration() {
     fi
 
     current_date=$(date +%s)
+    # shellcheck disable=SC2034
     warning_threshold=$((30 * 24 * 60 * 60))  # 30 days in seconds
 
     for cert in ${OVPN_PKI}/issued/*.crt; do
@@ -1586,7 +1993,11 @@ check_expiration() {
 
             # Get expiration date
             not_after=$(openssl x509 -in "$cert" -noout -enddate | cut -d= -f2)
-            exp_date=$(date -d "$not_after" +%s 2>/dev/null || date -j -f "%b %d %H:%M:%S %Y %Z" "$not_after" +%s 2>/dev/null)
+            # BusyBox date requires -D strptime format and no timezone suffix
+            not_after_stripped=$(echo "$not_after" | sed 's/ GMT$//')
+            exp_date=$(date -u -D "%b %d %H:%M:%S %Y" -d "$not_after_stripped" +%s 2>/dev/null || \
+                       date -d "$not_after" +%s 2>/dev/null || \
+                       date -j -f "%b %d %H:%M:%S %Y %Z" "$not_after" +%s 2>/dev/null)
 
             if [ -n "$exp_date" ]; then
                 days_left=$(( ($exp_date - $current_date) / 86400 ))
@@ -1606,6 +2017,193 @@ check_expiration() {
         fi
     done
     echo ""
+}
+
+# Check CRL expiry status; prints warning if within threshold or expired.
+# Returns: 0=ok, 1=no CRL, 2=expired, 3=expiring soon
+check_crl_expiry() {
+    local crl_file="${OVPN_PKI}/crl.pem"
+    local warn_days="${1:-30}"
+    local next_update
+    local exp_date
+    local current_date
+    local days_left
+
+    if [ ! -f "$crl_file" ]; then
+        return 1
+    fi
+
+    next_update=$(openssl crl -in "$crl_file" -noout -nextupdate 2>/dev/null | cut -d= -f2)
+    if [ -z "$next_update" ]; then
+        echo "WARNING: Could not parse CRL expiry date from $crl_file" >&2
+        return 1
+    fi
+
+    # BusyBox date requires -D strptime format and no timezone suffix
+    local next_update_stripped
+    next_update_stripped=$(echo "$next_update" | sed 's/ GMT$//')
+    exp_date=$(date -u -D "%b %d %H:%M:%S %Y" -d "$next_update_stripped" +%s 2>/dev/null || \
+               date -d "$next_update" +%s 2>/dev/null || \
+               date -j -f "%b %d %H:%M:%S %Y %Z" "$next_update" +%s 2>/dev/null)
+    if [ -z "$exp_date" ]; then
+        echo "WARNING: Could not convert CRL expiry date" >&2
+        return 1
+    fi
+
+    current_date=$(date +%s)
+    days_left=$(( (exp_date - current_date) / 86400 ))
+
+    if [ "$days_left" -lt 0 ]; then
+        echo "  [EXPIRED] CRL expired $((days_left * -1)) days ago — OpenVPN will reject ALL connections"
+        return 2
+    elif [ "$days_left" -lt "$warn_days" ]; then
+        echo "  [WARNING] CRL expires in $days_left days — renew before it expires"
+        return 3
+    else
+        echo "  [OK]      CRL valid for $days_left days"
+        return 0
+    fi
+}
+
+# Uncomment crl-verify in server.conf if it is currently commented out.
+# Called automatically after the first successful revocation.
+enable_crl_verify() {
+    local conf="$OVPN_SERVER_CONF"
+
+    if [ ! -f "$conf" ]; then
+        warn "server.conf not found at $conf — cannot enable crl-verify automatically"
+        return 1
+    fi
+
+    if grep -q "^crl-verify " "$conf"; then
+        echo "  crl-verify already enabled in $conf"
+        return 0
+    fi
+
+    if grep -q "^# crl-verify " "$conf"; then
+        sed -i 's|^# crl-verify |crl-verify |' "$conf"
+        echo "  Enabled crl-verify in $conf"
+        echo "  Installing daily CRL auto-renewal cron job..."
+        schedule_crl_renewal install
+        return 0
+    fi
+
+    warn "crl-verify line not found in $conf — add it manually: crl-verify ${OVPN_PKI}/crl.pem"
+    return 1
+}
+
+# Renew the CRL and optionally restart OpenVPN to pick it up
+renew_crl() {
+    local restart
+
+    echo ""
+    echo "=== Renew Certificate Revocation List ==="
+    echo ""
+
+    if [ ! -f "${OVPN_PKI}/crl.pem" ]; then
+        echo "No CRL found at ${OVPN_PKI}/crl.pem"
+        echo "A CRL is created automatically when you first revoke a client certificate."
+        return 1
+    fi
+
+    echo "Current CRL status:"
+    check_crl_expiry
+    echo ""
+
+    export EASYRSA_PKI="${OVPN_PKI}"
+    export EASYRSA_TEMP_DIR="/tmp"
+
+    echo "Regenerating CRL..."
+    if ! run_cmd "regenerate CRL" easyrsa gen-crl; then
+        return 1
+    fi
+
+    echo "CRL renewed: ${OVPN_PKI}/crl.pem"
+    echo ""
+    echo "New CRL status:"
+    check_crl_expiry
+    echo ""
+
+    read -p "Restart OpenVPN to apply renewed CRL? (y/n): " restart
+    if [ "$restart" = "y" ] || [ "$restart" = "Y" ]; then
+        safe_restart_openvpn "$OVPN_INSTANCE"
+    else
+        echo "Remember to restart OpenVPN for the renewed CRL to take effect."
+    fi
+}
+
+# Manage the daily cron job that auto-renews the CRL.
+# Usage: schedule_crl_renewal [install|remove|status]
+schedule_crl_renewal() {
+    local action="${1:-status}"
+    local crontab_file="/etc/crontabs/root"
+    local cron_marker="# openvpn-crl-renewal"
+    # Daily at 03:00 — low-traffic time, well within 180-day CRL validity
+    local cron_job="0 3 * * * export EASYRSA_PKI=${OVPN_PKI} EASYRSA_BATCH=1 EASYRSA_TEMP_DIR=/tmp && easyrsa gen-crl >> ${OVPN_CRL_LOG} 2>&1 && echo \"\$(date): CRL renewed OK\" >> ${OVPN_CRL_LOG} || echo \"\$(date): CRL renewal FAILED\" >> ${OVPN_CRL_LOG} ${cron_marker}"
+
+    case "$action" in
+        install)
+            if grep -q "$cron_marker" "$crontab_file" 2>/dev/null; then
+                echo "  CRL renewal cron job already installed."
+                return 0
+            fi
+
+            # Ensure crontab file and directory exist
+            mkdir -p "$(dirname "$crontab_file")"
+            touch "$crontab_file"
+
+            echo "$cron_job" >> "$crontab_file"
+
+            # Reload crond to pick up the new entry
+            /etc/init.d/cron reload 2>/dev/null || /etc/init.d/cron restart 2>/dev/null || true
+
+            echo "  CRL renewal cron job installed (daily at 03:00)."
+            echo "  Log: ${OVPN_CRL_LOG} (cleared on reboot)"
+            echo "  To view: cat ${OVPN_CRL_LOG}"
+            ;;
+
+        remove)
+            if ! grep -q "$cron_marker" "$crontab_file" 2>/dev/null; then
+                echo "  No CRL renewal cron job found."
+                return 0
+            fi
+
+            # Remove the line containing the marker
+            sed -i "/$cron_marker/d" "$crontab_file"
+
+            /etc/init.d/cron reload 2>/dev/null || /etc/init.d/cron restart 2>/dev/null || true
+
+            echo "  CRL renewal cron job removed."
+            echo "  WARNING: CRL will no longer be auto-renewed. Monitor expiry manually."
+            ;;
+
+        status)
+            echo ""
+            echo "=== CRL Auto-Renewal Cron Job ==="
+            if grep -q "$cron_marker" "$crontab_file" 2>/dev/null; then
+                echo "  Status:   INSTALLED (daily at 03:00)"
+                echo "  Log:      ${OVPN_CRL_LOG}"
+                if [ -f "${OVPN_CRL_LOG}" ]; then
+                    echo ""
+                    echo "  Recent log entries:"
+                    tail -5 "${OVPN_CRL_LOG}" | sed 's/^/    /'
+                else
+                    echo "  Log file not yet created (first run pending or lost after reboot)."
+                fi
+            else
+                echo "  Status:   NOT INSTALLED"
+                if [ -f "${OVPN_PKI}/crl.pem" ]; then
+                    local crl_expiry_msg
+                    crl_expiry_msg=$(check_crl_expiry 999)
+                    echo "  Current:  ${crl_expiry_msg# }"
+                fi
+                echo "  WARNING:  Without auto-renewal the CRL will expire and OpenVPN will"
+                echo "            reject ALL client connections — even valid, unrevoked ones."
+                echo "            Install the cron job (option 4) to prevent this."
+            fi
+            echo ""
+            ;;
+    esac
 }
 
 # Function to show certificate details
@@ -1717,27 +2315,31 @@ renew_certificate() {
     
     echo ""
     echo "Renewing certificate for $cert_name..."
-    
+
     # Use easyrsa renew command (available in easyrsa 3.2.1+)
     # If renew is not available, use the expire + sign-req method
-    if easyrsa help 2>&1 | grep -q "renew"; then
-        easyrsa renew "$cert_name" nopass
-    else
-        echo "Note: Using expire + sign-req method (easyrsa < 3.2.1)"
-        easyrsa expire "$cert_name" && easyrsa sign-req client "$cert_name"
-    fi
-    
-    if [ $? -eq 0 ]; then
-        echo ""
-        echo "Certificate renewed successfully!"
-        echo "Note: You will need to regenerate the .ovpn config file for this client."
-        echo ""
-        read -p "Regenerate .ovpn file now? (y/n): " regen
-        if [ "$regen" = "y" ] || [ "$regen" = "Y" ]; then
-            generate_single_ovpn "$cert_name"
+    if easyrsa help 2>&1 | grep -q "\brenew\b"; then
+        if ! run_cmd "renew certificate for $cert_name" easyrsa renew "$cert_name" nopass; then
+            return 1
         fi
     else
-        echo "Error: Certificate renewal failed"
+        echo "Note: Using expire + sign-req method (easyrsa < 3.2.1)"
+        if ! run_cmd "expire certificate for $cert_name" easyrsa expire "$cert_name"; then
+            return 1
+        fi
+        if ! run_cmd "sign certificate request for $cert_name" easyrsa sign-req client "$cert_name"; then
+            return 1
+        fi
+    fi
+
+    echo ""
+    log_action "certificate renewed (client=${cert_name} instance=${OVPN_INSTANCE})"
+    echo "Certificate renewed successfully!"
+    echo "Note: You will need to regenerate the .ovpn config file for this client."
+    echo ""
+    read -p "Regenerate .ovpn file now? (y/n): " regen
+    if [ "$regen" = "y" ] || [ "$regen" = "Y" ]; then
+        generate_single_ovpn "$cert_name"
     fi
 }
 
@@ -1763,10 +2365,32 @@ generate_single_ovpn() {
     echo "Generating .ovpn file for $OVPN_ID..."
 
     umask go=
-    OVPN_CA="$(openssl x509 -in ${OVPN_PKI}/ca.crt)"
-    OVPN_TC="$(cat ${OVPN_PKI}/private/${OVPN_ID}.pem)"
-    OVPN_KEY="$(cat ${OVPN_PKI}/private/${OVPN_ID}.key)"
-    OVPN_CERT="$(openssl x509 -in ${OVPN_PKI}/issued/${OVPN_ID}.crt)"
+
+    # Read CA certificate
+    if ! OVPN_CA="$(openssl x509 -in "${OVPN_PKI}/ca.crt" 2>/dev/null)"; then
+        echo "ERROR: Failed to read CA certificate" >&2
+        return 1
+    fi
+
+    # Read TLS-Crypt key
+    if [ ! -f "${OVPN_PKI}/private/${OVPN_ID}.pem" ]; then
+        echo "ERROR: TLS-Crypt key not found for $OVPN_ID" >&2
+        return 1
+    fi
+    OVPN_TC="$(cat "${OVPN_PKI}/private/${OVPN_ID}.pem")"
+
+    # Read client private key
+    if [ ! -f "${OVPN_PKI}/private/${OVPN_ID}.key" ]; then
+        echo "ERROR: Private key not found for $OVPN_ID" >&2
+        return 1
+    fi
+    OVPN_KEY="$(cat "${OVPN_PKI}/private/${OVPN_ID}.key")"
+
+    # Read client certificate
+    if ! OVPN_CERT="$(openssl x509 -in "${OVPN_PKI}/issued/${OVPN_ID}.crt" 2>/dev/null)"; then
+        echo "ERROR: Failed to read client certificate for $OVPN_ID" >&2
+        return 1
+    fi
 
     OVPN_CONF="${OVPN_DIR}/${OVPN_ID}.ovpn"
     
@@ -1827,6 +2451,7 @@ generate_all_ovpn() {
     echo ""
 
     umask go=
+    # shellcheck disable=SC2034
     OVPN_DH="$(cat ${OVPN_PKI}/dh.pem)"
     OVPN_CA="$(openssl x509 -in ${OVPN_PKI}/ca.crt)"
 
@@ -1889,16 +2514,20 @@ create_client() {
 
     read -p "Enter client name: " NEW_CLIENT
 
-    if [ -z "$NEW_CLIENT" ]; then
-        echo "Error: Client name cannot be empty"
+    if ! validate_client_name "$NEW_CLIENT"; then
         return 1
     fi
 
     echo "Building new keys for $NEW_CLIENT"
-    easyrsa build-client-full $NEW_CLIENT nopass
-    openvpn --tls-crypt-v2 ${EASYRSA_PKI}/private/server.pem \
-        --genkey tls-crypt-v2-client ${EASYRSA_PKI}/private/$NEW_CLIENT.pem
+    if ! run_cmd "build client certificate for $NEW_CLIENT" easyrsa build-client-full "$NEW_CLIENT" nopass; then
+        return 1
+    fi
+    if ! run_cmd "generate TLS-Crypt-v2 key for $NEW_CLIENT" openvpn --tls-crypt-v2 "${EASYRSA_PKI}/private/server.pem" \
+        --genkey tls-crypt-v2-client "${EASYRSA_PKI}/private/$NEW_CLIENT.pem"; then
+        return 1
+    fi
 
+    log_action "client created (client=${NEW_CLIENT} instance=${OVPN_INSTANCE})"
     echo ""
     read -p "Generate .ovpn config file? (y/n): " gen_ovpn
     if [ "$gen_ovpn" = "y" ] || [ "$gen_ovpn" = "Y" ]; then
@@ -1948,8 +2577,7 @@ revoke_client() {
     echo ""
     read -p "Enter client name to revoke: " CLIENT_TO_REVOKE
 
-    if [ -z "$CLIENT_TO_REVOKE" ]; then
-        echo "Error: No client name entered"
+    if ! validate_client_name "$CLIENT_TO_REVOKE"; then
         return 1
     fi
 
@@ -1960,21 +2588,27 @@ revoke_client() {
 
     echo ""
     echo "WARNING: You are about to revoke certificate for: $CLIENT_TO_REVOKE"
-    read -p "Are you sure? (yes/no): " confirm
+    read -t 30 -p "Are you sure? (yes/no, 30s timeout): " confirm
     
     case $confirm in
         yes)
             echo "Revoking certificate for $CLIENT_TO_REVOKE..."
-            easyrsa revoke $CLIENT_TO_REVOKE
-            
+            if ! run_cmd "revoke certificate for $CLIENT_TO_REVOKE" easyrsa revoke "$CLIENT_TO_REVOKE"; then
+                return 1
+            fi
+
             echo "Generating Certificate Revocation List (CRL)..."
-            easyrsa gen-crl
-            
+            if ! run_cmd "generate CRL" easyrsa gen-crl; then
+                return 1
+            fi
+
             echo ""
+            log_action "client revoked (client=${CLIENT_TO_REVOKE} instance=${OVPN_INSTANCE})"
             echo "Certificate revoked successfully."
             echo "CRL updated at: ${OVPN_PKI}/crl.pem"
             echo ""
-            echo "NOTE: Ensure 'crl-verify' is enabled in your server.conf"
+            echo "Enabling crl-verify in server.conf..."
+            enable_crl_verify
             echo ""
             
             read -p "Restart OpenVPN daemon to apply changes? (y/n): " response
@@ -2106,16 +2740,20 @@ monitor_single_instance() {
     local line
     local client_name
     local real_addr
+    # shellcheck disable=SC2034
     local virtual_ipv4
+    # shellcheck disable=SC2034
     local virtual_ipv6
     local bytes_recv
     local bytes_sent
     local connected_since
     local bytes_recv_mb
     local bytes_sent_mb
+    # shellcheck disable=SC2034
     local status_file
 
     # Get the status file path for this instance
+    # shellcheck disable=SC2034
     status_file=$(get_status_file_path "$instance")
 
     echo "=================================================="
@@ -2233,7 +2871,7 @@ monitor_single_instance() {
     done
 
     # Check OpenVPN log for client status
-    local log_file=$(get_log_file_path "$instance")
+    local log_file; log_file=$(get_log_file_path "$instance")
 
     if [ -f "$log_file" ]; then
         # Find PID for this specific instance
@@ -2258,6 +2896,7 @@ monitor_single_instance() {
 
         # Extract ONLY the LAST CLIENT LIST section from log file (the one we just triggered)
         local temp_clients="/tmp/openvpn_monitor_$$"
+        register_temp "$temp_clients"
         tail -300 "$log_file" 2>/dev/null | awk '
             /OpenVPN CLIENT LIST/ {
                 # Start of a new client list - reset everything to capture only the last one
@@ -2327,9 +2966,7 @@ monitor_single_instance() {
                 fi
             done < "$temp_clients"
         fi
-
-        # Clean up temp file
-        rm -f "$temp_clients"
+        # Temp file cleaned up automatically by trap
     else
         echo "=================================================="
         echo "Note: OpenVPN log file not found at $log_file"
@@ -2386,6 +3023,7 @@ toggle_ipv6() {
                 read -p "Enter mode (static/dhcpv6): " new_mode
                 if [ "$new_mode" = "static" ]; then
                     OVPN_IPV6_MODE="$new_mode"
+                    update_ipv6_hints_in_conf
                     echo "Mode changed to: $OVPN_IPV6_MODE"
                     echo "Note: Regenerate server.conf (option 1) to apply changes"
                 elif [ "$new_mode" = "dhcpv6" ]; then
@@ -2399,6 +3037,7 @@ toggle_ipv6() {
                         read -p "Continue with DHCPv6 mode anyway? (yes/no): " confirm_dhcpv6
                         if [ "$confirm_dhcpv6" = "yes" ]; then
                             OVPN_IPV6_MODE="dhcpv6"
+                            update_ipv6_hints_in_conf
                             echo "Mode changed to: $OVPN_IPV6_MODE"
                             echo "Note: You MUST configure odhcpd manually before this will work"
                             echo "Note: Regenerate server.conf (option 1) to apply changes"
@@ -2425,6 +3064,7 @@ toggle_ipv6() {
                     if check_ipv6_subnet_conflict "$new_ipv6_pool"; then
                         OVPN_IPV6_POOL="$new_ipv6_pool"
                         OVPN_IPV6_DNS="${OVPN_IPV6_POOL%::*}::1"
+                        update_ipv6_hints_in_conf
                         echo "IPv6 subnet changed to: $OVPN_IPV6_POOL"
                         echo "Note: Regenerate server.conf (option 1) to apply changes"
                     else
@@ -2438,6 +3078,7 @@ toggle_ipv6() {
                 read -p "Enter new max clients limit: " new_size
                 if [ -n "$new_size" ] && [ "$new_size" -gt 0 ] 2>/dev/null; then
                     OVPN_IPV6_POOL_SIZE="$new_size"
+                    update_ipv6_hints_in_conf
                     echo "Max clients limit changed to: $OVPN_IPV6_POOL_SIZE"
                 else
                     echo "Invalid number. No changes made."
@@ -2453,6 +3094,8 @@ toggle_ipv6() {
                 read -p "Disable IPv6 support? (yes/no): " confirm
                 if [ "$confirm" = "yes" ]; then
                     OVPN_IPV6_ENABLE="no"
+                    update_ipv6_hints_in_conf
+                    log_action "IPv6 disabled (instance=${OVPN_INSTANCE})"
                     echo ""
                     echo "IPv6 support disabled"
                     echo ""
@@ -2554,6 +3197,8 @@ toggle_ipv6() {
             fi
 
             OVPN_IPV6_ENABLE="yes"
+            update_ipv6_hints_in_conf
+            log_action "IPv6 enabled (mode=${OVPN_IPV6_MODE} subnet=${OVPN_IPV6_POOL} instance=${OVPN_INSTANCE})"
             echo ""
             echo "IPv6 support enabled"
             echo "  Mode: $OVPN_IPV6_MODE"
@@ -2623,7 +3268,7 @@ configure_performance() {
             echo ""
             read -p "Enter bandwidth limit (bytes/sec): " new_limit
 
-            if [ -n "$new_limit" ] && [ "$new_limit" -ge 0 ] 2>/dev/null; then
+            if validate_non_negative_int "$new_limit" "Bandwidth limit"; then
                 OVPN_BANDWIDTH_LIMIT="$new_limit"
                 echo ""
                 if [ "$OVPN_BANDWIDTH_LIMIT" -gt 0 ]; then
@@ -2634,7 +3279,7 @@ configure_performance() {
                 fi
                 echo "Note: Regenerate server.conf (option 1) to apply changes"
             else
-                echo "Invalid number. No changes made."
+                echo "No changes made."
             fi
             ;;
         *)
@@ -2653,34 +3298,65 @@ key_management_first_time() {
     export EASYRSA_CERT_EXPIRE="3650"
     export EASYRSA_BATCH="1"
 
-    # Remove and re-initialize PKI directory
-    easyrsa init-pki
+    # Apply crypto algorithm settings
+    if [ "$OVPN_CRYPTO_ALGO" = "ec" ]; then
+        export EASYRSA_ALGO="ec"
+        export EASYRSA_CURVE="${OVPN_CRYPTO_CURVE}"
+        echo "Crypto: EC (${OVPN_CRYPTO_CURVE}) — DH parameters not required"
+    else
+        export EASYRSA_ALGO="rsa"
+        export EASYRSA_KEY_SIZE="${OVPN_RSA_KEY_SIZE}"
+        echo "Crypto: RSA ${OVPN_RSA_KEY_SIZE}-bit"
+    fi
+    echo ""
 
-    # Generate DH parameters
-    easyrsa gen-dh
+    # Remove and re-initialize PKI directory
+    if ! run_cmd "initialize PKI directory" easyrsa init-pki; then
+        return 1
+    fi
+
+    # Generate DH parameters (RSA only — EC uses ECDH, no DH params needed)
+    if [ "$OVPN_CRYPTO_ALGO" != "ec" ]; then
+        echo "Generating DH parameters (${OVPN_RSA_KEY_SIZE}-bit) — this may take several minutes..."
+        if ! run_cmd "generate DH parameters" easyrsa gen-dh; then
+            return 1
+        fi
+    fi
 
     # Create a new CA
-    easyrsa build-ca nopass
+    if ! run_cmd "build Certificate Authority" easyrsa build-ca nopass; then
+        return 1
+    fi
 
     # Generate server keys and certificate
-    easyrsa build-server-full server nopass
-    openvpn --genkey tls-crypt-v2-server ${EASYRSA_PKI}/private/server.pem
+    if ! run_cmd "build server certificate" easyrsa build-server-full server nopass; then
+        return 1
+    fi
+    if ! run_cmd "generate TLS-Crypt-v2 server key" openvpn --genkey tls-crypt-v2-server "${EASYRSA_PKI}/private/server.pem"; then
+        return 1
+    fi
+
+    echo ""
+    log_action "PKI initialized (algo=${OVPN_CRYPTO_ALGO} instance=${OVPN_INSTANCE})"
+    echo "PKI initialized with the following settings:"
+    show_crypto_summary
 
 }
 
-# Function to install LuCI OpenVPN web interface
-install_luci_openvpn() {
+# Function to install LuCI OpenVPN and File Manager web interface
+install_luci_openvpn_filemanager() {
     local confirm
 
     echo ""
-    echo "=== Install LuCI OpenVPN Web Interface ==="
+    echo "=== Install LuCI OpenVPN and File Manager Web Interface ==="
     echo ""
-    echo "This will install luci-app-openvpn for web-based management"
-    echo "The LuCI app provides:"
+    echo "This will install luci-app-openvpn and luci-app-filemanager"
+    echo "The LuCI apps provide:"
     echo "  - Web interface for managing OpenVPN instances"
     echo "  - Start/stop/restart controls"
     echo "  - Configuration file editing"
     echo "  - Status monitoring"
+    echo "  - File manager for downloading generated client .ovpn files"
     echo ""
     echo "This script and LuCI will share the same UCI configuration"
     echo "Changes made in one will be visible in the other"
@@ -2698,15 +3374,15 @@ install_luci_openvpn() {
 
     echo ""
     echo "Updating package lists..."
-    if ! opkg update; then
+    if ! pkg_update; then
         echo "Error: Failed to update package lists"
         echo "Check your internet connection"
         return 1
     fi
 
     echo ""
-    echo "Installing luci-app-openvpn..."
-    if opkg install luci-app-openvpn; then
+    echo "Installing luci-app-openvpn and luci-app-filemanager..."
+    if pkg_install luci-app-openvpn luci-app-filemanager; then
         echo ""
         echo "Installation complete!"
         echo ""
@@ -2714,6 +3390,9 @@ install_luci_openvpn() {
         echo "  Web Interface > Services > OpenVPN"
         echo "  or"
         echo "  Web Interface > System > OpenVPN"
+        echo ""
+        echo "Access the file manager at:"
+        echo "  Web Interface > System > File Manager"
         echo ""
         echo "Note: You may need to refresh your browser to see the new menu"
     else
@@ -2804,6 +3483,7 @@ check_active_connections() {
         if [ -f "$log_file" ]; then
             # Create temp file to extract the CLIENT LIST section
             temp_extract="/tmp/openvpn_client_check_$$"
+            register_temp "$temp_extract"
 
             # Get last 300 lines to ensure we capture the full CLIENT LIST block
             # Extract ONLY the LAST "OpenVPN CLIENT LIST" section (the one we just triggered)
@@ -2843,13 +3523,11 @@ check_active_connections() {
             # Strip any whitespace and ensure it's a number
             connection_count=$(echo "$connection_count" | tr -d ' \t\n\r')
             connection_count=${connection_count:-0}
-
-            # Clean up temp file
-            rm -f "$temp_extract"
+            # Temp file cleaned up automatically by trap
         else
             # Log file doesn't exist - fallback to network interface method
             for tun_if in $(ip link show | grep -o "tun[0-9]*" | sort -u); do
-                local neighbors=$(ip neigh show dev "$tun_if" 2>/dev/null | grep -v "FAILED" | awk 'END {print NR}')
+                local neighbors; neighbors=$(ip neigh show dev "$tun_if" 2>/dev/null | grep -v "FAILED" | awk 'END {print NR}')
                 neighbors=$(echo "$neighbors" | tr -d ' \t\n\r')
                 neighbors=${neighbors:-0}
                 connection_count=$((connection_count + neighbors))
@@ -2871,7 +3549,7 @@ ensure_at_installed() {
         echo "Installing 'at' package..."
         echo ""
 
-        if opkg update && opkg install at; then
+        if pkg_update && pkg_install at; then
             echo ""
             echo "'at' utility installed successfully."
 
@@ -2931,6 +3609,7 @@ safe_restart_openvpn() {
                 /etc/init.d/openvpn restart "$instance"
                 sleep 2
                 if [ -n "$(get_openvpn_pid "$instance")" ]; then
+                    log_action "server restarted (instance=${instance})"
                     echo "Server restarted successfully."
                 else
                     echo "WARNING: Server may have failed to start. Check logs: logread | grep openvpn"
@@ -2965,6 +3644,7 @@ safe_restart_openvpn() {
                 echo "/etc/init.d/openvpn restart $instance" | at "$schedule_time" 2>/dev/null
 
                 if [ $? -eq 0 ]; then
+                    log_action "server restart scheduled (instance=${instance} time=${schedule_time})"
                     echo ""
                     echo "Restart scheduled successfully for: $schedule_time"
                     echo ""
@@ -2998,6 +3678,7 @@ safe_restart_openvpn() {
         /etc/init.d/openvpn restart "$instance"
         sleep 2
         if [ -n "$(get_openvpn_pid "$instance")" ]; then
+            log_action "server restarted (instance=${instance})"
             echo "Server restarted successfully."
         else
             echo "WARNING: Server may have failed to start. Check logs: logread | grep openvpn"
@@ -3010,6 +3691,7 @@ safe_restart_openvpn() {
 # Function to control OpenVPN server (start/stop/restart)
 control_openvpn_server() {
     local action
+    # shellcheck disable=SC2034
     local status_output
     local is_running
     local confirm
@@ -3057,6 +3739,7 @@ control_openvpn_server() {
                 echo ""
                 sleep 2
                 if [ -n "$(get_openvpn_pid "$OVPN_INSTANCE")" ]; then
+                    log_action "server started (instance=${OVPN_INSTANCE})"
                     echo "Server started successfully."
                 else
                     echo "WARNING: Server may have failed to start. Check logs with: logread | grep openvpn"
@@ -3070,7 +3753,7 @@ control_openvpn_server() {
             else
                 echo ""
                 echo "WARNING: This will disconnect all connected VPN clients."
-                read -p "Stop OpenVPN server? (yes/no): " confirm
+                read -t 30 -p "Stop OpenVPN server? (yes/no, 30s timeout): " confirm
                 if [ "$confirm" = "yes" ]; then
                     echo ""
                     echo "Stopping OpenVPN server instance: $OVPN_INSTANCE"
@@ -3078,6 +3761,7 @@ control_openvpn_server() {
                     echo ""
                     sleep 2
                     if [ -z "$(get_openvpn_pid "$OVPN_INSTANCE")" ]; then
+                        log_action "server stopped (instance=${OVPN_INSTANCE})"
                         echo "Server stopped successfully."
                     else
                         echo "WARNING: Server may still be running. Try: killall openvpn"
@@ -3098,7 +3782,7 @@ control_openvpn_server() {
             echo ""
 
             # Check process status
-            local vpn_pid=$(get_openvpn_pid "$OVPN_INSTANCE")
+            local vpn_pid; vpn_pid=$(get_openvpn_pid "$OVPN_INSTANCE")
             if [ -n "$vpn_pid" ]; then
                 echo "Process Status: RUNNING"
                 echo "PID: $vpn_pid"
@@ -3133,19 +3817,23 @@ control_openvpn_server() {
             echo ""
             echo "Enabling OpenVPN server to start on boot..."
             uci set openvpn.${OVPN_INSTANCE}.enabled='1'
-            uci commit openvpn
+            if ! run_cmd "commit OpenVPN UCI configuration" uci commit openvpn; then
+                return 1
+            fi
             /etc/init.d/openvpn enable
             echo ""
             echo "OpenVPN instance '$OVPN_INSTANCE' will now start automatically on boot."
             ;;
         6)
             echo ""
-            read -p "Disable OpenVPN server from starting on boot? (yes/no): " confirm
+            read -t 30 -p "Disable OpenVPN server from starting on boot? (yes/no, 30s timeout): " confirm
             if [ "$confirm" = "yes" ]; then
                 echo ""
                 echo "Disabling OpenVPN server from starting on boot..."
                 uci set openvpn.${OVPN_INSTANCE}.enabled='0'
-                uci commit openvpn
+                if ! run_cmd "commit OpenVPN UCI configuration" uci commit openvpn; then
+                    return 1
+                fi
                 echo ""
                 echo "OpenVPN instance '$OVPN_INSTANCE' will NOT start automatically on boot."
                 echo "Note: Server is still running if it was already started."
@@ -3176,7 +3864,7 @@ get_file_perms() {
     if [ -z "$perms" ]; then
         # Use ls -l and parse permissions
         # Format: -rwxr-xr-x or drwxr-xr-x
-        local ls_perms=$(ls -ld "$filepath" 2>/dev/null | awk '{print $1}')
+        local ls_perms; ls_perms=$(ls -ld "$filepath" 2>/dev/null | awk '{print $1}')
 
         # Convert symbolic to octal (e.g., -rw-r--r-- -> 644)
         if [ -n "$ls_perms" ]; then
@@ -3215,8 +3903,11 @@ check_fix_permissions() {
     local file
     local dir
     local fix_all
+    # shellcheck disable=SC2034
     local check_type
+    # shellcheck disable=SC2034
     local expected_perms
+    # shellcheck disable=SC2034
     local actual_perms
     local temp_issues
     local counter
@@ -3244,7 +3935,8 @@ check_fix_permissions() {
 
     # Create temp file to store issues for batch fixing
     local temp_issues="/tmp/openvpn_perm_issues_$$"
-    > "$temp_issues"  # Clear/create temp file
+    register_temp "$temp_issues"
+    true > "$temp_issues"
 
     # Check 1: Private keys must be 600 (CRITICAL SECURITY)
     echo "1. Checking private keys (*.key files)..."
@@ -3454,13 +4146,94 @@ check_fix_permissions() {
     fi
     echo "=========================================="
     echo ""
-
-    # Cleanup temp file
-    rm -f "$temp_issues"
+    # Temp file cleaned up automatically by trap
 }
+
+# Function to install core packages needed to run the script
+install_needed_packages() {
+    local confirm
+
+    # apk uses 'openvpn' as a virtual provider (resolves to -openssl or -mbedtls
+    # without conflicting with whichever variant is already installed).
+    # opkg on OpenWrt 24 and below requires the explicit package name.
+    local ovpn_pkg
+    case "$PKG_MGR" in
+        apk)  ovpn_pkg="openvpn" ;;
+        opkg) ovpn_pkg="openvpn-openssl" ;;
+    esac
+
+    echo ""
+    echo "=== Install Required Packages ==="
+    echo ""
+    echo "This will install: at, $ovpn_pkg, openvpn-easy-rsa"
+    echo ""
+    read -p "Continue with installation? (yes/no): " confirm
+
+    if [ "$confirm" != "yes" ]; then
+        echo "Installation cancelled"
+        return 0
+    fi
+
+    echo ""
+    echo "Updating package lists..."
+    if ! pkg_update; then
+        echo "Error: Failed to update package lists"
+        echo "Check your internet connection"
+        return 1
+    fi
+
+    echo ""
+    echo "Installing at, $ovpn_pkg, openvpn-easy-rsa..."
+    if pkg_install at "$ovpn_pkg" openvpn-easy-rsa; then
+        echo ""
+        echo "Installation complete!"
+        echo ""
+    else
+        echo "Error: Installation failed"
+        echo "The package may already be installed or unavailable"
+        return 1
+    fi
+}
+
+# Test guard: skip main menu when sourced for testing
+# Usage: SHELLSPEC_TESTING=true . ./openvpn_server_management.sh
+if [ "${SHELLSPEC_TESTING:-}" = "true" ]; then
+    return 0 2>/dev/null || exit 0
+fi
+
+# Prevent duplicate sessions
+if [ -f "$OVPN_MGMT_PID" ]; then
+    existing_pid=$(cat "$OVPN_MGMT_PID" 2>/dev/null)
+    if [ -n "$existing_pid" ] && kill -0 "$existing_pid" 2>/dev/null; then
+        echo "ERROR: another session is already running (PID $existing_pid)" >&2
+        exit 1
+    fi
+    rm -f "$OVPN_MGMT_PID"
+fi
+printf '%d\n' "$$" > "$OVPN_MGMT_PID"
 
 # Clear terminal at startup for clean display
 reset
+
+# Load IPv6 settings from existing server.conf (if present)
+load_ipv6_config_from_conf
+
+# Warn on startup if CRL is expired or expiring within 30 days
+if [ -f "${OVPN_PKI}/crl.pem" ]; then
+    crl_status=$(check_crl_expiry 30)
+    crl_rc=$?
+    if [ $crl_rc -ge 2 ]; then
+        echo ""
+        echo "=========================================="
+        echo "  CRL ALERT"
+        echo "=========================================="
+        echo "$crl_status"
+        echo ""
+        echo "  Use option 'r) Renew CRL' from the menu."
+        echo "=========================================="
+        echo ""
+    fi
+fi
 
 # Main menu
 while true; do
@@ -3470,52 +4243,72 @@ while true; do
     echo "=================================================="
     echo "Currently managing: [$OVPN_INSTANCE]"
     echo ""
+    echo "First-Time Setup:"
+    echo "  1) Install required packages (at, openvpn, openvpn-easy-rsa)"
+    echo "  2) Configure cryptography settings (currently: ${OVPN_CRYPTO_ALGO})"
+    echo "  3) Initialize EasyRSA / PKI"
+    echo "  4) Auto-detect server settings"
+    echo "  5) Generate/Update server.conf"
+    echo "  6) Install LuCI OpenVPN and File Manager web interface"
+    echo ""
     echo "Instance Management:"
     echo "  i) Select/Create OpenVPN instance"
     echo "  l) List all OpenVPN instances"
     echo ""
     echo "Server Configuration:"
-    echo "  0) Auto-Detect server settings"
-    echo "  1) Generate/Update server.conf"
-    echo "  2) Restore server.conf from backup"
-    echo "  3) Toggle IPv6 support (Currently: $OVPN_IPV6_ENABLE)"
-    echo "  p) Configure performance (bandwidth limiting)"
-    echo ""
-    echo "Server Control:"
+    echo "  7) Restore server.conf from backup"
+    echo "  8) Toggle IPv6 support (currently: $OVPN_IPV6_ENABLE)"
+    echo "  9) Configure performance (bandwidth limiting)"
     echo "  s) Start/Stop/Restart server"
     echo ""
-    echo "Certificate Management:"
-    echo "  4) Create new client certificate"
-    echo "  5) List current clients"
-    echo "  6) Revoke client certificate"
-    echo "  7) Check certificate expiration"
-    echo "  8) Renew certificate"
-    echo "  9) Show certificate details"
-    echo ""
-    echo "Configuration Files:"
-    echo " 10) Generate all .ovpn config files"
-    echo " 11) Generate single .ovpn config file"
-    echo ""
-    echo "Setup & Integration:"
-    echo " 12) Install and initialize EasyRSA for OpenVPN"
-    echo " 13) Install LuCI OpenVPN web interface"
-    echo ""
     echo "Firewall Management:"
-    echo " 14) Check firewall configuration"
-    echo " 15) Configure VPN firewall access"
+    echo " 10) Check firewall configuration"
+    echo " 11) Configure VPN firewall access"
     echo ""
-    echo "VPN Monitoring:"
-    echo " 16) Monitor VPN address usage (IPv4 & IPv6)"
+    echo "Client Certificates:"
+    echo " 12) Create client certificate"
+    echo " 13) List client certificates"
+    echo " 14) Revoke client certificate"
+    echo " 15) Check certificate expiration"
+    echo " 16) Renew certificate"
+    echo " 17) Show certificate details"
+    echo "  r) CRL management (check/renew/auto-renewal)"
     echo ""
-    echo "Diagnostics:"
-    echo " 17) Diagnose IPv6 routing issues"
-    echo " 18) Check/Fix file permissions"
+    echo "Client VPN Profiles:"
+    echo " 18) Generate all .ovpn config files"
+    echo " 19) Generate single .ovpn config file"
     echo ""
-    echo " 19) Exit"
+    echo "Monitoring & Diagnostics:"
+    echo " 20) Monitor VPN usage"
+    echo " 21) Diagnose IPv6 routing issues"
+    echo " 22) Check/Fix file permissions"
     echo ""
-    read -p "Select an option: " choice
-    
+    echo "  x) Exit"
+    echo ""
+    read -p "Select an option: " choice || exit 0
+
     case $choice in
+        1)
+            install_needed_packages
+            read -p "Press Enter to continue..."
+            ;;
+        2)
+            configure_crypto
+            read -p "Press Enter to continue..."
+            ;;
+        3)
+            key_management_first_time
+            ;;
+        4)
+            auto_detect_fqdn
+            ;;
+        5)
+            generate_server_conf
+            ;;
+        6)
+            install_luci_openvpn_filemanager
+            read -p "Press Enter to continue..."
+            ;;
         i|I)
             select_openvpn_instance
             read -p "Press Enter to continue..."
@@ -3524,20 +4317,14 @@ while true; do
             list_openvpn_instances
             read -p "Press Enter to continue..."
             ;;
-	0)
-            auto_detect_fqdn
-            ;;
-        1)
-            generate_server_conf
-            ;;
-        2)
+        7)
             restore_server_conf
             ;;
-        3)
+        8)
             toggle_ipv6
             read -p "Press Enter to continue..."
             ;;
-        p|P)
+        9)
             configure_performance
             read -p "Press Enter to continue..."
             ;;
@@ -3545,32 +4332,65 @@ while true; do
             control_openvpn_server
             read -p "Press Enter to continue..."
             ;;
-        4)
-            create_client
-            ;;
-        5)
-            list_clients
-            read -p "Press Enter to continue..."
-            ;;
-        6)
-            revoke_client
-            ;;
-        7)
-            check_expiration
-            read -p "Press Enter to continue..."
-            ;;
-        8)
-            renew_certificate
-            ;;
-        9)
-            show_cert_details
-            read -p "Press Enter to continue..."
-            ;;
         10)
-            generate_all_ovpn
+            check_firewall
             read -p "Press Enter to continue..."
             ;;
         11)
+            configure_vpn_firewall
+            read -p "Press Enter to continue..."
+            ;;
+        12)
+            create_client
+            ;;
+        13)
+            list_clients
+            read -p "Press Enter to continue..."
+            ;;
+        14)
+            revoke_client
+            ;;
+        15)
+            check_expiration
+            read -p "Press Enter to continue..."
+            ;;
+        16)
+            renew_certificate
+            ;;
+        17)
+            show_cert_details
+            read -p "Press Enter to continue..."
+            ;;
+        r|R)
+            echo ""
+            echo "=== CRL Management ==="
+            echo ""
+            echo "  1) Check CRL expiry status"
+            echo "  2) Renew CRL now"
+            echo "  3) Auto-renewal cron job status"
+            echo "  4) Install auto-renewal cron job"
+            echo "  5) Remove auto-renewal cron job"
+            echo ""
+            read -p "Select option: " crl_choice
+            case "$crl_choice" in
+                1)
+                    echo ""
+                    echo "CRL status:"
+                    check_crl_expiry
+                    ;;
+                2) renew_crl ;;
+                3) schedule_crl_renewal status ;;
+                4) schedule_crl_renewal install ;;
+                5) schedule_crl_renewal remove ;;
+                *) echo "Cancelled." ;;
+            esac
+            read -p "Press Enter to continue..."
+            ;;
+        18)
+            generate_all_ovpn
+            read -p "Press Enter to continue..."
+            ;;
+        19)
             echo ""
             read -p "Enter client name: " client_name
             if [ -n "$client_name" ]; then
@@ -3580,34 +4400,19 @@ while true; do
             fi
             read -p "Press Enter to continue..."
             ;;
-	    12)
-            key_management_first_time
-            ;;
-        13)
-            install_luci_openvpn
-            read -p "Press Enter to continue..."
-            ;;
-        14)
-            check_firewall
-            read -p "Press Enter to continue..."
-            ;;
-        15)
-            configure_vpn_firewall
-            read -p "Press Enter to continue..."
-            ;;
-        16)
+        20)
             monitor_vpn_usage
             read -p "Press Enter to continue..."
             ;;
-        17)
+        21)
             diagnose_ipv6_routing
             read -p "Press Enter to continue..."
             ;;
-        18)
+        22)
             check_fix_permissions
             read -p "Press Enter to continue..."
             ;;
-        19)
+        x|X)
             echo "Exiting..."
             exit 0
             ;;

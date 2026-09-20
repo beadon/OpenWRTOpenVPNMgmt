@@ -1,13 +1,53 @@
 # OpenWRT OpenVPN Server Management
 
-**Version: v2.5**
+**Version: v2.10.0**
 
 Openwrt VPN setup and management script, making management of Open VPN via CLI much simpler.
 
 The All-in-One OpenVPN Management Script
 Tired of managing keys, ovpn files and all different parts piecemeal? Use this script on the CLI to manage it all.
 
-## What's New in v2.5
+## What's New in v2.10.0
+
+- **RFC 4193 IPv6 ULA Generation** - When enabling IPv6 (option 8), leave the subnet blank to auto-generate a random RFC 4193-compliant ULA prefix (`fdXX:XXXX:XXXX:1::/64`) using `/dev/urandom`; subnet ID `:1` is the conventional first subnet of the generated /48
+- **IPv6 Config Persistence** - IPv6 settings are persisted in `server.conf` as real OpenVPN directives (`server-ipv6`) plus structured comment hints (`# openvpn-mgmt: ipv6_mode=`, `ipv6_max_clients=`); settings survive script restarts without a separate config file
+- **ULA Conflict Detection** - Generated prefix is checked against the router's active LAN IPv6 prefix; retries up to 3 times if a collision is detected (statistically near-impossible but handled correctly)
+- **Numbered Test Output** - Integration test output now uses `suite.test` numbering (e.g. `PASS 14.3`) for easier navigation in logs
+
+## What's New in v2.9.0
+
+- **Syslog Integration** - All significant actions (PKI init, server.conf generate/restore, client create/revoke/renew, firewall configure, server start/stop/restart, IPv6 enable/disable, instance create/switch) are logged to the system log via `logger`; filter with `logread -e openvpn-mgmt`
+- **SSH Disconnect Resilience** - Script now exits cleanly when the SSH session drops (kernel SIGHUP via PTY close) rather than spinning at 100% CPU on a deleted PTY; regression test included
+- **Duplicate Session Guard** - Script writes a PID file at startup (`/var/run/openvpn_mgmt.pid`) and refuses to launch a second instance if one is already running
+- **sexpect Integration Tests** - 100 tests across 14 suites covering all menu paths; SSH disconnect regression verified on real OpenWrt hardware
+
+## What's New in v2.8.0
+
+- **EC Cryptography Default** - PKI now uses Elliptic Curve (EC) keys with `prime256v1` (NIST P-256) by default; faster key generation on router hardware, no `gen-dh` step required
+- **RSA Compatibility Option** - Set `OVPN_CRYPTO_ALGO="rsa"` to use RSA 2048-bit keys for older clients (pre-OpenVPN 2.4, ~2017 and earlier)
+- **Crypto Configuration Menu** - New `k) Configure cryptography settings` menu option shows current algorithm, curve/key size, and allows switching before PKI init
+- **TLS Hardening** - `tls-version-min 1.2` and `data-ciphers AES-256-GCM` enforced in all generated server configs
+- **BusyBox Date Compatibility** - CRL expiry date parsing now uses BusyBox `date -D` strptime format first, with GNU `date -d` and macOS `date -j` as fallbacks
+
+## What's New in v2.7.0
+
+- **CRL Auto-Renewal** - Daily cron job automatically renews the Certificate Revocation List before it expires; prevents the silent outage where an expired CRL locks out all VPN clients including valid ones
+- **CRL Management Menu** - New `r) CRL management` option: check expiry, renew manually, install/remove/status of auto-renewal cron job
+- **Automatic `crl-verify` Activation** - First client revocation now automatically enables `crl-verify` in `server.conf` and installs the renewal cron job in one step
+- **Startup CRL Alert** - Script warns at launch if CRL is expired or within 30 days of expiry
+- **Input Validation** - `validate_client_name()`, `validate_non_negative_int()` helpers; client name and bandwidth inputs now validated consistently
+- **Destructive Action Timeouts** - 30-second `read` timeout on revoke, stop server, and disable boot confirmations
+- **Error Hardening** - `run_cmd` guards on all `uci commit` calls in production paths; server.conf write verified non-empty after generation
+- **GitHub Actions CI** - Automated ShellCheck, unit tests (busybox ash), and integration tests; ShellSpec 0.28.1 installed from pinned tarball with SHA256 verification (no pipe-to-shell)
+
+## What's New in v2.6.0
+
+- **OpenWRT 25 Support** - Automatic detection of `apk` (OpenWRT 25+) or `opkg` (older versions) for all package operations
+- **Install Required Packages Menu** - New menu option 19 installs `at`, `openvpn-openssl`, and `openvpn-easy-rsa` in one step
+- **LuCI File Manager** - Option 6 now also installs `luci-app-filemanager` for easy .ovpn file downloads via the web interface
+- **Exit moved to option 20**
+
+## What's New in v2.5.0
 
 - **Server Control Menu** - Centralized start/stop/restart with status checking
 - **Safe Restart** - Automatic detection of active client connections before restart
@@ -17,11 +57,108 @@ Tired of managing keys, ovpn files and all different parts piecemeal? Use this s
 - **Permission Management** - Check and fix PKI file permissions
 - **Better Process Detection** - Consolidated PID lookup with accurate matching
 
+## Table of Contents
+
+- [Disclaimer](#disclaimer)
+- [Architecture Overview](#architecture-overview)
+- [First-Time Setup Guide](#first-time-setup-guide)
+  - [Prerequisites](#prerequisites)
+  - [Step-by-Step Setup](#step-by-step-setup)
+- [Features](#features)
+  - [UCI Management Integration](#uci-management-integration)
+  - [LuCI Integration](#luci-integration)
+  - [OpenVPN Monitoring](#openvpn-monitoring)
+- [Quick Reference - Common Operations](#quick-reference---common-operations)
+  - [Examine Management Logs](#examine-management-logs)
+  - [Revoke a Client Certificate](#revoke-a-client-certificate)
+  - [Manage CRL (Certificate Revocation List)](#manage-crl-certificate-revocation-list)
+- [Troubleshooting](#troubleshooting)
+- [Advanced Usage](#advanced-usage)
+- [IPv6 VPN Tunnel Setup](#ipv6-vpn-tunnel-setup)
+- [Development and Testing](#development-and-testing)
+- [License](#license)
+
+---
+
+## Disclaimer
+
+Tested on OpenWRT v23.05 and v24.10. Older versions may behave unexpectedly.
+Compatibility is expected for releases since v20.x.x from https://git.openwrt.org
+
+This project is provided "as-is", without warranty. Users are responsible for
+ensuring compatibility and security for their own environment and use case.
+
+---
+
+## Architecture Overview
+
+### Network Flow
+
+How VPN clients connect through your OpenWRT router to access LAN resources:
+
+```mermaid
+flowchart LR
+    subgraph Internet
+        WAN[WAN]
+    end
+
+    subgraph clients [VPN Clients]
+        C1[Phone]
+        C2[Laptop]
+    end
+
+    subgraph router [OpenWRT Router]
+        FW[Firewall<br/>Port 1194]
+        OVPN[OpenVPN<br/>Server]
+        LAN[LAN Bridge<br/>br-lan]
+    end
+
+    subgraph local [Local Network]
+        D1[LAN Devices]
+    end
+
+    C1 & C2 -->|Encrypted<br/>UDP 1194| WAN
+    WAN --> FW
+    FW --> OVPN
+    OVPN --> LAN
+    LAN --> D1
+```
+
+### Address Pools
+
+IP address pools managed by this script:
+
+```mermaid
+flowchart TB
+    subgraph pools [Address Pools]
+        subgraph vpn ["VPN Tunnel (tun0)"]
+            V4["IPv4: 10.8.0.0/24<br/>Server: 10.8.0.1"]
+            V6["IPv6: fdXX:XXXX:XXXX:1::/64<br/>(RFC 4193 ULA, optional)"]
+        end
+
+        subgraph lan ["LAN (br-lan)"]
+            L4["192.168.1.0/24"]
+        end
+    end
+
+    V4 --> C1["Client 1<br/>10.8.0.2"]
+    V4 --> C2["Client 2<br/>10.8.0.3"]
+    V6 -.->|"if enabled"| C1v6["fdXX:...::2"]
+
+    vpn <-->|"Routed"| lan
+```
+
+---
 
 Assuming you have installed wget...
 ```
+# OpenWRT 24 and earlier:
 opkg update
 opkg install wget
+
+# OpenWRT 25 and later:
+apk update
+apk add wget
 ```
 Then if you are SSSH'd into OpenWRT now, grab then run it like this:
 ```
@@ -36,13 +173,7 @@ This guide assumes you're starting from scratch with nothing installed. Follow t
 
 ## Prerequisites
 
-1. **Install required packages:**
-   ```bash
-   opkg update
-   opkg install openvpn-openssl wget
-   ```
-
-2. **Download and run the script:**
+1. **Download and run the script:**
    ```bash
    wget https://raw.githubusercontent.com/beadon/OpenWRTOpenVPNMgmt/refs/heads/main/openvpn_server_management.sh
    chmod 775 openvpn_server_management.sh
@@ -51,50 +182,91 @@ This guide assumes you're starting from scratch with nothing installed. Follow t
 
    The script will auto-create the default "server" instance on first run.
 
-## Step-by-Step Setup
+<details>
+<summary><strong>Step-by-Step Setup</strong> (click to expand)</summary>
 
-### Step 1: Install LuCI Web Interface (Optional but Recommended)
+### Step 1: Install Required Packages
 
-**Menu Option: 13**
+**Menu Option: 1**
 
 ```
-13) Install LuCI OpenVPN web interface
+1) Install required packages (at, openvpn, openvpn-easy-rsa)
 Continue with installation? (yes/no): yes
 ```
 
-This installs `luci-app-openvpn` which provides:
+This installs the core packages needed to run the script:
+- `at` — used for scheduling safe restarts
+- `openvpn` — the OpenVPN daemon (resolves to `openvpn-openssl` or `openvpn-mbedtls` depending on your build)
+- `openvpn-easy-rsa` — certificate and PKI management
+
+The script automatically uses `apk` on OpenWRT 25+ or `opkg` on older versions.
+
+**Package manager differences:**
+
+| Version | Package manager | OpenVPN package |
+|---------|----------------|-----------------|
+| OpenWRT 25+ | `apk` | `openvpn` (virtual provider — resolves to `-openssl` or `-mbedtls`) |
+| OpenWRT 24 and below | `opkg` | `openvpn-openssl` |
+
+The script detects the package manager at startup and uses the correct package name automatically.
+
+### Step 2: Install LuCI Web Interface (Optional but Recommended)
+
+**Menu Option: 6**
+
+```
+6) Install LuCI OpenVPN and File Manager web interface
+Continue with installation? (yes/no): yes
+```
+
+This installs `luci-app-openvpn` and `luci-app-filemanager` which provide:
 - Web-based management interface
 - Instance control (start/stop/restart)
 - Configuration file editing
 - Status monitoring
+- File manager for downloading generated client .ovpn files
 
 **Access:** Web Interface → Services → OpenVPN (or System → OpenVPN)
+**File Manager:** Web Interface → System → File Manager
 
 **Note:** Changes made in LuCI and this script are synchronized via UCI.
 
-### Step 2: Install and Initialize EasyRSA
+### Step 3: Initialize EasyRSA
 
-**Menu Option: 12**
+**Menu Option: 3**
 
 ```
-12) Install and initialize EasyRSA for OpenVPN
+3) Initialize EasyRSA / PKI
 ```
 
 This will:
 - Initialize the PKI (Public Key Infrastructure)
-- Generate Diffie-Hellman parameters
 - Create the Certificate Authority (CA)
 - Generate server certificate and keys
 - Create TLS-Crypt key
+- Generate Diffie-Hellman parameters (RSA only — skipped for EC)
 
-**Important:** This step takes several minutes due to cryptographic key generation.
+#### EC vs RSA Cryptography
 
-### Step 3: Auto-Detect Server Settings
+The script defaults to **EC (Elliptic Curve)** with the `prime256v1` curve (NIST P-256). EC is recommended for all modern deployments:
 
-**Menu Option: 0**
+| | EC (default) | RSA |
+|---|---|---|
+| Key generation | Fast — no `gen-dh` step | Slower — DH parameter generation adds minutes |
+| Router hardware | Well-suited (low CPU) | Higher CPU cost |
+| Client compatibility | OpenVPN 2.4+ (2017+) | All OpenVPN versions |
+| Security | Strong — equivalent to RSA 3072+ | Strong at 2048-bit |
+
+To use RSA instead, edit the `OVPN_CRYPTO_ALGO` variable at the top of the script before running Step 3, or use Menu Option `2) Configure cryptography settings`. Once the PKI is initialized the algorithm cannot be changed without re-initializing (which revokes all existing certificates).
+
+**Important:** This step takes several minutes for RSA (DH generation). EC completes significantly faster.
+
+### Step 4: Auto-Detect Server Settings
+
+**Menu Option: 4**
 
 ```
-0) Auto-Detect server settings
+4) Auto-detect server settings
 ```
 
 This automatically detects:
@@ -105,7 +277,7 @@ This automatically detects:
 
 Review the detected settings. The script will use these for configuration generation.
 
-**Note:** IPv6 support is disabled by default. If you want to enable IPv6 for your VPN, use Menu Option 3 after reviewing the auto-detected IPv6 settings.
+**Note:** IPv6 support is disabled by default. If you want to enable IPv6 for your VPN, use Menu Option 8 after reviewing the auto-detected IPv6 settings (Step 5 below).
 
 **DDNS Support:**
 
@@ -115,18 +287,18 @@ The auto-detect feature will automatically detect your DDNS hostname if configur
 1. Follow the official OpenWrt DDNS guide: https://openwrt.org/docs/guide-user/services/ddns/client
 2. Configure your DDNS service provider in LuCI or UCI
 3. Verify DDNS is working: `nslookup your-hostname.dyndns.org`
-4. Run this script's auto-detect (Option 0) - it will automatically use your DDNS hostname
+4. Run this script's auto-detect (Option 4) - it will automatically use your DDNS hostname
 
 If DDNS is not configured, the script will fall back to using your current WAN IP address.
 
-### Step 4: Configure IPv6 (Optional - Advanced Users)
+### Step 5: Configure IPv6 (Optional - Advanced Users)
 
 **Note:** IPv6 is disabled by default to avoid configuration conflicts. Only enable if you understand IPv6 networking and have verified your router has proper IPv6 prefix delegation from your ISP.
 
-**Menu Option: 3**
+**Menu Option: 8**
 
 ```
-3) Toggle IPv6 support (Currently: no)
+8) Toggle IPv6 support (Currently: no)
 Enable IPv6 support? (yes/no): yes
 
 Select IPv6 mode:
@@ -135,20 +307,24 @@ Select IPv6 mode:
 
 Select mode (1-2): 1
 
-Enter IPv6 subnet: 2001:db8:1234:1194::/64
+Enter IPv6 subnet (leave blank to auto-generate RFC 4193 ULA):
+Generated RFC 4193 ULA prefix: fd3a:b7c1:9e24:1::/64
 Enter max clients limit (default 253): 100
 ```
 
 **IPv6 Subnet Options:**
-- **Globally routable:** Use a /64 from your ISP's delegation (detected in Step 3)
-- **Private ULA:** Generate at https://unique-local-ipv6.com/
+- **Globally routable:** Use a /64 from your ISP's delegation (detected in Step 4)
+- **Private ULA (auto-generated):** Leave the subnet blank — the script generates a random
+  RFC 4193-compliant prefix (`fdXX:XXXX:XXXX:1::/64`) using `/dev/urandom`, checks it
+  against the router's LAN prefix to avoid collisions, and persists it in `server.conf`.
+- **Private ULA (manual):** Enter any `fd00::/8` prefix in `/64` notation.
 
-### Step 4.5: Configure Performance Settings (Optional)
+### Step 5.5: Configure Performance Settings (Optional)
 
-**Menu Option: p**
+**Menu Option: 9**
 
 ```
-p) Configure performance (bandwidth limiting)
+9) Configure performance (bandwidth limiting)
 
 Current Performance Settings:
 
@@ -212,12 +388,12 @@ Enter bandwidth limit in bytes per second:
 
 **Note:** The `shaper` directive applies to outgoing traffic from the server. For more advanced per-client bandwidth control, consider using Traffic Control (tc) scripts.
 
-### Step 5: Generate Server Configuration
+### Step 6: Generate Server Configuration
 
-**Menu Option: 1**
+**Menu Option: 5**
 
 ```
-1) Generate/Update server.conf
+5) Generate/Update server.conf
 Continue and overwrite? (yes/no): yes
 View the generated configuration? (y/n): y
 ```
@@ -233,12 +409,12 @@ This creates `/etc/openvpn/server.conf` with:
 
 **Autostart Configuration:** The script automatically enables the OpenVPN service to start on router boot by running `/etc/init.d/openvpn enable`. This ensures your VPN server starts automatically after power cycles or reboots.
 
-### Step 6: Configure Firewall
+### Step 7: Configure Firewall
 
-**Menu Option: 15**
+**Menu Option: 11**
 
 ```
-15) Configure VPN firewall access
+11) Configure VPN firewall access
 Continue with firewall configuration? (yes/no): yes
 Restart firewall to apply changes? (y/n): y
 ```
@@ -274,7 +450,7 @@ Restart firewall to apply changes? (y/n): y
 **Verify Firewall:**
 
 ```
-14) Check firewall configuration
+10) Check firewall configuration
 ```
 
 **Confirms:**
@@ -284,9 +460,9 @@ Restart firewall to apply changes? (y/n): y
 - IPv6 zones properly configured
 - IPv6 forwarding rules exist
 
-### Step 7: Restart OpenVPN
+### Step 8: Restart OpenVPN
 
-From Step 5, when prompted:
+From Step 6, when prompted:
 
 ```
 Restart OpenVPN instance 'server' to apply changes? (y/n): y
@@ -297,12 +473,12 @@ Or manually:
 /etc/init.d/openvpn restart server
 ```
 
-### Step 8: Create Your First Client Certificate
+### Step 9: Create Your First Client Certificate
 
-**Menu Option: 4**
+**Menu Option: 12**
 
 ```
-4) Create new client certificate
+12) Create new client certificate
 Enter client name: username.laptop
 Generate .ovpn config file? (y/n): y
 ```
@@ -329,7 +505,7 @@ This can be arranged any way you like, consider a naming scheme like:
 - TLS-Crypt key: `/etc/easy-rsa/pki/private/bill.laptop.pem`
 - Client config: `/root/ovpn_config_out/bill.laptop.ovpn`
 
-### Step 9: Download Client Configuration
+### Step 10: Download Client Configuration
 
 The `.ovpn` file is located at: `/root/ovpn_config_out/bill.laptop.ovpn`
 
@@ -341,11 +517,10 @@ scp root@192.168.1.1:/root/ovpn_config_out/bill.laptop.ovpn ~/Downloads/
 ```
 
 **Or via LuCI Web Interface:**
-NOTE: file browser is installable as ```opkg install luci-app-filemanager```
 
-1. Navigate to System → File Browser (if available)
+Install the file manager via menu option 6, then navigate to System → File Browser
 
-### Step 10: Connect Your Client
+### Step 11: Connect Your Client
 
 **Windows/Mac/Linux:**
 1. Install OpenVPN client
@@ -369,6 +544,8 @@ curl -6 ifconfig.co     # Check IPv6 address (if enabled)
 ```
 
 One the client device (the laptop or mobile device) open a browser while the VPN connection is established to check that this reflect's the OpenVPN server's IP [https://www.whatismyip.com/](https://www.whatismyip.com/)
+
+</details>
 
 # FEATURES
 
@@ -399,13 +576,13 @@ One the client device (the laptop or mobile device) open a browser while the VPN
     - Shows instance status, config file path, and running state
 
 ## LuCI Integration
-  - Install luci-app-openvpn with one command
-  - Automatic opkg update and package installation
+  - Install `luci-app-openvpn` and `luci-app-filemanager` with one command (menu option 6)
+  - Automatic package installation using `apk` (OpenWRT 25+) or `opkg` (older versions)
   - Changes made in LuCI web interface appear in this script and vice versa
 
 ### Viewing VPN Tunnel in LuCI
 
-After running **Menu Option 15** (Configure VPN firewall access), the VPN tunnel interface will appear in LuCI:
+After running **Menu Option 11** (Configure VPN firewall access), the VPN tunnel interface will appear in LuCI:
 
 **Location:** LuCI → Network → Interfaces
 
@@ -430,10 +607,10 @@ After running **Menu Option 15** (Configure VPN firewall access), the VPN tunnel
 **Important:** The `vpn` interface is managed by OpenVPN. Don't edit it directly in LuCI - use this script (Menu Options) or edit `/etc/openvpn/server.conf` instead.
 
 **Troubleshooting:** If VPN interface doesn't appear in LuCI:
-1. Run Menu Option 15 to create UCI network interface
+1. Run Menu Option 11 to create UCI network interface
 2. Restart network service: `/etc/init.d/network restart`
 3. Refresh LuCI page
-4. Check Menu Option 14 for verification
+4. Check Menu Option 10 for verification
 
 
 ## OpenVPN Monitoring
@@ -441,6 +618,7 @@ After running **Menu Option 15** (Configure VPN firewall access), the VPN tunnel
   - Select specific instance to monitor OR monitor all instances
   - Sends SIGUSR2 to correct instance-specific process
   - Shows per-instance network status and client connections
+  - Management actions are written to the system log — view with `logread -e openvpn-mgmt`
 
 ## Instance-Aware Operations
   - All operations now use the selected instance
@@ -461,10 +639,10 @@ After running **Menu Option 15** (Configure VPN firewall access), the VPN tunnel
 
 ### Monitor VPN Status
 
-**Menu Option: 16**
+**Menu Option: 20**
 
 ```
-16) Monitor VPN address usage (IPv4 & IPv6)
+20) Monitor VPN usage
 Select instance to monitor: 1
 ```
 
@@ -474,11 +652,43 @@ Shows:
 - Bandwidth usage per client
 - Connection times
 
+### Examine Management Logs
+
+The script logs all significant actions to the OpenWrt system log via `logger`. Entries are tagged `openvpn-mgmt` and appear alongside the OpenVPN daemon's own log lines.
+
+**View all management actions:**
+```sh
+logread -e openvpn-mgmt
+```
+
+**Sample output:**
+```
+Mon May  4 04:40:31 2026 user.notice openvpn-mgmt: PKI initialized (algo=ec instance=server)
+Mon May  4 04:40:31 2026 user.notice openvpn-mgmt: server.conf generated (instance=server)
+Mon May  4 04:40:32 2026 user.notice openvpn-mgmt: client created (client=alice instance=server)
+Mon May  4 04:40:37 2026 user.notice openvpn-mgmt: firewall configured (instance=server)
+Mon May  4 04:40:40 2026 user.notice openvpn-mgmt: server started (instance=server)
+```
+
+**View management and OpenVPN daemon logs together:**
+```sh
+logread -e openvpn
+```
+
+**Follow the log in real time:**
+```sh
+logread -f -e openvpn-mgmt
+```
+
+Logged actions: PKI init, server.conf generate/restore, firewall configure, server start/stop/restart, client create/revoke/renew, IPv6 enable/disable, instance create/switch.
+
+> **Note:** OpenWrt uses an in-memory circular log buffer (default 64 KB). Logs do not persist across reboots. For persistent logging, configure remote syslog forwarding in **System → System → Logging** in LuCI, or via `/etc/config/system` (`log_ip` / `log_port` options).
+
 ### Create Additional Clients
 
 ```
-**Menu Option: 4** (Create certificate)
-**Menu Option: 11** (Generate single .ovpn file)
+**Menu Option: 12** (Create certificate)
+**Menu Option: 19** (Generate single .ovpn file)
 ```
 
 ### Manage Multiple Server Instances
@@ -497,31 +707,64 @@ Enter new instance name: office_vpn
 
 ### Revoke a Client Certificate
 
-**Menu Option: 6**
+**Menu Option: 14**
 
 ```
-6) Revoke client certificate
+14) Revoke client certificate
 Enter client name to revoke: laptop
-Are you sure? (yes/no): yes
+Are you sure? (yes/no, 30s timeout): yes
+Revoking certificate for laptop...
+Generating Certificate Revocation List (CRL)...
+Enabling crl-verify in server.conf...
+  Enabled crl-verify in /etc/openvpn/server.conf
+  Installing daily CRL auto-renewal cron job...
+  CRL renewal cron job installed (daily at 03:00).
 Restart OpenVPN daemon to apply changes? (y/n): y
 ```
 
-### Check Certificate Expiration
+On first revocation the script automatically:
+1. Generates `crl.pem`
+2. Uncomments `crl-verify` in `server.conf`
+3. Installs a daily cron job to renew the CRL before it expires
 
-**Menu Option: 7**
+### Manage CRL (Certificate Revocation List)
+
+**Menu Option: r**
+
+> **Why this matters:** EasyRSA CRLs expire after 180 days by default. When a CRL expires,
+> OpenVPN rejects **all** client connections — including valid, unrevoked ones. The script
+> automatically installs a daily renewal cron job on first revocation, but you can manage it manually here.
 
 ```
-7) Check certificate expiration
+r) CRL management (check/renew/auto-renewal)
+
+=== CRL Management ===
+  1) Check CRL expiry status
+  2) Renew CRL now
+  3) Auto-renewal cron job status
+  4) Install auto-renewal cron job
+  5) Remove auto-renewal cron job
+```
+
+The auto-renewal cron job runs daily at 03:00 and logs to `/tmp/openvpn-crl-renewal.log`.
+The script also warns at startup if the CRL is expired or within 30 days of expiry.
+
+### Check Certificate Expiration
+
+**Menu Option: 15**
+
+```
+15) Check certificate expiration
 ```
 
 Shows expiration status for all certificates.
 
 ### Check/Fix File Permissions
 
-**Menu Option: 18**
+**Menu Option: 22**
 
 ```
-18) Check/Fix file permissions
+22) Check/Fix file permissions
 Fix all permission issues now? (yes/no): yes
 ```
 
@@ -619,7 +862,7 @@ To cancel a scheduled job: atrm <job_number>
 **Automatic 'at' Installation:**
 
 The `at` utility (for scheduling) is automatically installed if not present:
-- Runs `opkg update && opkg install at`
+- Uses `apk add at` (OpenWRT 25+) or `opkg update && opkg install at` (older versions)
 - Enables and starts the `atd` daemon
 - Provides job management commands (`atq`, `atrm`)
 
@@ -627,12 +870,13 @@ The `at` utility (for scheduling) is automatically installed if not present:
 
 Safe restart with connection checking is automatically used in:
 - Server Control menu (Menu Option 's', Action 3)
-- After generating server configuration (Menu Option 1)
-- After restoring configuration from backup (Menu Option 2)
-- After creating new client certificates (Menu Option 4)
-- After revoking client certificates (Menu Option 6)
+- After generating server configuration (Menu Option 5)
+- After restoring configuration from backup (Menu Option 7)
+- After creating new client certificates (Menu Option 12)
+- After revoking client certificates (Menu Option 14)
 
-## Troubleshooting
+<details>
+<summary><strong>Troubleshooting</strong> (click to expand)</summary>
 
 ### IPv6 Not Working - VPN Clients Can't Access Internet via IPv6
 
@@ -640,8 +884,8 @@ Safe restart with connection checking is automatically used in:
 
 **Use the built-in diagnostic tool first:**
 ```bash
-# Run from script Menu Option 17
-17) Diagnose IPv6 routing issues
+# Run from script Menu Option 21
+21) Diagnose IPv6 routing issues
 ```
 
 This will automatically check all common issues below.
@@ -785,8 +1029,8 @@ curl -4 https://ifconfig.co
 
 **Use the built-in permission checker first:**
 ```bash
-# Run from script Menu Option 18
-18) Check/Fix file permissions
+# Run from script Menu Option 22
+22) Check/Fix file permissions
 ```
 
 This will automatically check and optionally fix all permission issues.
@@ -950,8 +1194,8 @@ This indicates your router's DHCPv6 server cannot allocate IPv6 addresses to LAN
 3. **Prefix delegation too small:**
    - If your ISP only gives a single /64, you cannot subdivide it for both LAN and VPN
    - **Solution for VPN:** Use a private ULA prefix (fd00::/8) for VPN instead
-   - Generate ULA at: https://unique-local-ipv6.com/
-   - Configure in script: Menu Option p → Option 3 (Toggle IPv6) → Enter ULA prefix
+   - Leave the subnet blank when enabling IPv6 (option 8) — a random RFC 4193 prefix is auto-generated
+   - Or enter a specific `fd00::/8` prefix in `/64` notation
 
 4. **DHCPv6 range exhausted:**
    ```bash
@@ -1049,6 +1293,8 @@ uci show network.lan
 Enter client name: laptop
 ```
 
+</details>
+
 ## Advanced Usage
 
 ### Multiple Server Instances
@@ -1074,13 +1320,14 @@ Edit variables at the top of the script before running:
 OVPN_PORT="1194"              # VPN port
 OVPN_PROTO="udp"              # Protocol: udp or tcp
 OVPN_POOL="10.8.0.0 255.255.255.0"  # IPv4 VPN subnet
-OVPN_IPV6_POOL="fd42:4242:4242:1194::/64"  # IPv6 VPN subnet
+OVPN_IPV6_POOL=""                           # IPv6 VPN subnet (auto-generated on first use)
 OVPN_IPV6_POOL_SIZE="253"     # Max clients
 ```
 
 
 
-# IPv6 VPN Tunnel Setup
+<details>
+<summary><strong>IPv6 VPN Tunnel Setup</strong> (click to expand - optional/advanced)</summary>
 
 **IMPORTANT: IPv6 is DISABLED by default and is completely OPTIONAL.**
 
@@ -1156,7 +1403,7 @@ If your ISP delegates `2001:db8:1234::/56`, you can use any /64 subnet within it
 # Available subnets from 2001:db8:1234::/56:
 # 2001:db8:1234:0::/64    (LAN)
 # 2001:db8:1234:1::/64    (Guest network)
-# 2001:db8:1234:1194::/64 (OpenVPN) ← Recommended for VPN
+# 2001:db8:1234:1::/64    (OpenVPN) ← use next available subnet
 # ... up to 2001:db8:1234:ff::/64
 ```
 
@@ -1182,18 +1429,18 @@ Use this if:
 - You only need IPv6 connectivity between VPN clients and LAN
 - You want private, non-routable IPv6 addresses
 
-**Generate ULA Prefix:**
-1. Visit: https://unique-local-ipv6.com/
-2. Generate a random ULA prefix (e.g., `fd42:4242:4242::/48`)
-3. Use a /64 subnet from it for VPN (e.g., `fd42:4242:4242:1194::/64`)
-
-**Script Configuration:**
-```bash
-OVPN_IPV6_ENABLE="yes"
-OVPN_IPV6_MODE="static"
-OVPN_IPV6_POOL="fd42:4242:4242:1194::/64"  # Private ULA
-OVPN_IPV6_POOL_SIZE="253"
+**Auto-generated ULA Prefix (recommended):**
+Enable IPv6 (option 8) and leave the subnet blank. The script generates a random
+RFC 4193-compliant prefix using `/dev/urandom`, checks for LAN conflicts, and
+persists it in `server.conf` as both a real OpenVPN directive and `# openvpn-mgmt:` hints:
 ```
+server-ipv6 fd3a:b7c1:9e24:1::/64
+# openvpn-mgmt: ipv6_mode=static
+# openvpn-mgmt: ipv6_max_clients=253
+```
+
+**Manual ULA Prefix:**
+Enter any `fd00::/8` prefix in `/64` notation when prompted (e.g., `fd42:4242:4242:1::/64`).
 
 **Limitation:** VPN clients can only access IPv6 resources on your LAN, not the internet.
 
@@ -1251,7 +1498,7 @@ ip -6 addr show tun0
 ```
 
 **3. Monitor IPv6 usage:**
-- Run **Option 16** in the script
+- Run **Option 20** in the script
 - Select the server instance
 - View IPv6 addresses and connected clients
 
@@ -1345,11 +1592,11 @@ Then restart: `/etc/init.d/openvpn restart server`
 Monitor and limit IPv6 address usage:
 
 **Check current usage:**
-- Run **Option 16** (Monitor VPN address usage)
+- Run **Option 20** (Monitor VPN usage)
 - Shows: active IPv6 addresses, connected clients, remaining capacity
 
 **Adjust pool size:**
-- Run **Option 3** (Toggle IPv6 support)
+- Run **Option 8** (Toggle IPv6 support)
 - Select **Option 3** (Change max clients limit)
 - Enter new limit (e.g., 50, 100, 253)
 
@@ -1413,7 +1660,7 @@ Check prerequisites and show configuration guide? (y/n): y
 **Step 2: Review the prerequisite check results**
 
 The script will check:
-- Is odhcpd installed? If not: `opkg update && opkg install odhcpd`
+- Is odhcpd installed? If not: install via your package manager (`apk add odhcpd` or `opkg install odhcpd`)
 - Is odhcpd running? If not: `/etc/init.d/odhcpd start && /etc/init.d/odhcpd enable`
 
 **Step 3: Follow the manual configuration guide**
@@ -1484,7 +1731,7 @@ cat /tmp/hosts/odhcpd
 logread | grep odhcpd
 ```
 
-**Use the script's monitoring (Option 16):**
+**Use the script's monitoring (Option 20):**
 - Shows connected clients
 - Displays IPv6 addresses in use
 - Works with both static and DHCPv6 modes
@@ -1568,3 +1815,150 @@ logread | grep "odhcpd.*vpn"
 - Works even if odhcpd fails
 
 **For 99% of users, static mode provides everything needed without the complexity.**
+
+</details>
+
+---
+
+## Development and Testing
+
+### Automated CI
+
+GitHub Actions runs three jobs on every push and PR to `main` and `dev`:
+
+- **shellcheck** — lints the script for POSIX compliance
+- **unit-tests** — runs `spec/unit/` under busybox ash (no Docker needed)
+- **integration-tests** — builds the OpenWrt Docker container and runs `spec/integration/`
+
+ShellSpec 0.28.1 is installed from a pinned GitHub release tarball with SHA256 verification.
+See `.github/workflows/shellspec.sha256` for the recorded checksum.
+
+### Real Device Integration Tests (Authoritative)
+
+The authoritative test environment is a physical OpenWrt device running the full interactive
+menu via `sexpect`. This covers everything Docker cannot: package installation, firewall
+rules, `crond`, service management, and actual PKI generation timing.
+
+**Prerequisites on the device:**
+- `sexpect` installed (`apk add sexpect` or `opkg install sexpect`)
+- `openssh-sftp-server` installed (for SCP transfers)
+- SSH key access as root
+
+**Run the full suite from your Mac:**
+
+```bash
+OPENWRT_HOST=192.168.88.32 ./tests/run_tests.sh
+```
+
+The launcher (`tests/run_tests.sh`):
+1. Copies the script and test files to the device over SCP
+2. Pre-cleans device state (removes PKI, config files, and uninstalls test packages)
+3. SSHes in once and runs `tests/integration_test.sh` locally on the device
+4. Tees output to `tests/last_run.txt`
+
+**Test suites (39 tests, ~12s on Pi 3):**
+
+| Suite | What it tests |
+|-------|--------------|
+| Suite 0 | Package installation via `apk`/`opkg` (cold start — packages uninstalled by pre-clean) |
+| Suite 1 | PKI initialisation — EC/prime256v1, CA cert, server cert, TLS-crypt-v2 key |
+| Suite 2 | `server.conf` generation — TLS 1.2 min, AES-256-GCM, `dh none` (EC) |
+| Suite 3 | Client certificate creation and `.ovpn` profile generation |
+| Suite 4 | CRL revocation, auto-enable of `crl-verify`, cron job install |
+
+**Key implementation notes:**
+
+- All `sexpect` calls run locally on the device — no nested SSH loops
+- `expect_send` primitive hard-fails if a prompt is not seen within its timeout, preventing silent cascade failures
+- `require_suite` gates abort remaining suites immediately if a prerequisite suite fails
+- Pre-clean wipes `/etc/easy-rsa` entirely so Suite 1 PKI timing reflects a genuine cold start
+- All filesystem paths are declared as variables at the top of `integration_test.sh` — no hardcoded paths in test logic
+- `apk list --installed` format is `<name>-<version>`, not `<name> ` — the `pkg_is_installed` helper uses `grep "^<name>-"` for apk
+
+**Package manager compatibility (apk vs opkg):**
+
+The script and tests both mirror the same detection logic:
+
+```sh
+if command -v apk >/dev/null 2>&1; then PKG_MGR="apk"; else PKG_MGR="opkg"; fi
+```
+
+| Behaviour | apk (OpenWRT 25+) | opkg (OpenWRT 24 and below) |
+|-----------|-------------------|---------------------------|
+| Install packages | `apk add <pkg>` | `opkg install <pkg>` |
+| Update lists | `apk update` | `opkg update` |
+| Check installed | `apk list --installed \| grep "^<name>-"` | `opkg list-installed \| grep "^<name> "` |
+| OpenVPN package | `openvpn` (virtual provider) | `openvpn-openssl` |
+
+### Docker Test Container
+
+A Docker-based OpenWrt rootfs is available for PKI, certificate, and CRL testing.
+Note: firewall configuration and service management are not testable in this environment.
+
+#### Prerequisites
+
+- Docker installed
+- SSH public key at `~/.ssh/id_rsa.pub`
+
+#### Build and Run
+
+```bash
+docker build --build-arg SSH_PUBLIC_KEY="$(cat ~/.ssh/id_rsa.pub)" -t openwrt-ovpn-test ./docker
+docker run -it --name openwrt-test -p 2222:22 openwrt-ovpn-test
+```
+
+#### Connect and Test
+
+```bash
+# From a separate terminal
+ssh root@localhost -p 2222
+
+# Copy and run script
+scp -P 2222 openvpn_server_management.sh root@localhost:/root/
+ssh root@localhost -p 2222 '/root/openvpn_server_management.sh'
+```
+
+#### Install ShellSpec Locally (matches CI, no pipe-to-shell)
+
+```bash
+SHELLSPEC_VERSION="0.28.1"
+SHELLSPEC_SHA256="350d3de04ba61505c54eda31a3c2ee912700f1758b1a80a284bc08fd8b6c5992"
+curl -fsSL -o /tmp/shellspec-dist.tar.gz \
+  "https://github.com/shellspec/shellspec/releases/download/${SHELLSPEC_VERSION}/shellspec-dist.tar.gz"
+echo "${SHELLSPEC_SHA256}  /tmp/shellspec-dist.tar.gz" | sha256sum --check --strict
+tar -xzf /tmp/shellspec-dist.tar.gz -C /tmp
+sudo install -m 755 /tmp/shellspec/shellspec /usr/local/bin/shellspec
+
+# Run unit tests (no Docker needed)
+shellspec spec/unit/
+
+# Run integration tests (requires Docker container running)
+shellspec spec/integration/
+```
+
+#### Cleanup
+
+```bash
+docker rm -f openwrt-test
+```
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for development guidelines and commit message standards.
+
+---
+
+# LICENSE
+Copyright (C) 2025 Bryant Eadon
+
+This program is free software; you can redistribute it and/or
+modify it under the terms of the GNU General Public License
+as published by the Free Software Foundation; either version 2
+of the License, or (at your option) any later version.
+
+This program is distributed in the hope that it will be useful,
+but WITHOUT ANY WARRANTY; without even the implied warranty of
+MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+GNU General Public License for more details.
+
+You should have received a copy of the GNU General Public License
+along with this program; if not, see
+<https://www.gnu.org/licenses/>.

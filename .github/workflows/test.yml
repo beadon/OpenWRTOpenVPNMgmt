@@ -1,0 +1,32 @@
+name: Tests
+
+on:
+  push:
+    branches: [main, dev]
+  pull_request:
+    branches: [main, dev]
+
+# CI gate: ShellCheck only.
+#
+# Unit tests (ShellSpec/busybox) and integration tests (sexpect on real hardware)
+# are run locally by developers — they require an OpenWrt device and a busybox
+# environment that cannot be reliably reproduced in a GitHub-hosted runner.
+# See CONTRIBUTING.md for how to run them locally.
+
+jobs:
+  shellcheck:
+    name: ShellCheck
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+
+      - name: Install shellcheck
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y shellcheck
+
+      - name: Run shellcheck
+        # SC3043/SC3045: local and read -p/-t are ash extensions used deliberately;
+        # not POSIX but supported by busybox ash on all target OpenWrt versions.
+        run: shellcheck --shell=sh --severity=warning --exclude=SC3043,SC3045 openvpn_server_management.sh
