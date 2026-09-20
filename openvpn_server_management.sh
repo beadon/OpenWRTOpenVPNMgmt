@@ -1968,6 +1968,7 @@ check_expiration() {
     local cert
     local basename
     local not_after
+    local not_after_stripped
     local exp_date
     local days_left
 
@@ -1990,7 +1991,11 @@ check_expiration() {
 
             # Get expiration date
             not_after=$(openssl x509 -in "$cert" -noout -enddate | cut -d= -f2)
-            exp_date=$(date -d "$not_after" +%s 2>/dev/null || date -j -f "%b %d %H:%M:%S %Y %Z" "$not_after" +%s 2>/dev/null)
+            # BusyBox date requires -D strptime format and no timezone suffix
+            not_after_stripped=$(echo "$not_after" | sed 's/ GMT$//')
+            exp_date=$(date -u -D "%b %d %H:%M:%S %Y" -d "$not_after_stripped" +%s 2>/dev/null || \
+                       date -d "$not_after" +%s 2>/dev/null || \
+                       date -j -f "%b %d %H:%M:%S %Y %Z" "$not_after" +%s 2>/dev/null)
 
             if [ -n "$exp_date" ]; then
                 days_left=$(( ($exp_date - $current_date) / 86400 ))
