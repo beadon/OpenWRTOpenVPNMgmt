@@ -679,6 +679,7 @@ generate_ula_prefix_safe() {
 
 # Update (or append) # openvpn-mgmt: hint comments in server.conf.
 # Called after toggle_ipv6 mutates IPv6 settings so they persist across restarts.
+# shellcheck disable=SC2120  # optional override arg, always called bare in this repo
 update_ipv6_hints_in_conf() {
     local conf="${1:-$OVPN_SERVER_CONF}"
     [ -f "$conf" ] || return 0
@@ -700,6 +701,7 @@ update_ipv6_hints_in_conf() {
 # Populates OVPN_IPV6_POOL, OVPN_IPV6_DNS, OVPN_IPV6_MODE, OVPN_IPV6_POOL_SIZE,
 # and OVPN_IPV6_ENABLE from real directives and # openvpn-mgmt: hint comments.
 # Safe to call even when server.conf does not yet exist.
+# shellcheck disable=SC2120  # optional override arg, always called bare in this repo
 load_ipv6_config_from_conf() {
     local conf="${1:-$OVPN_SERVER_CONF}"
     [ -f "$conf" ] || return 0
